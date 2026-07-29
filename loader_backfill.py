@@ -18,8 +18,6 @@ Cómo usarlo:
   # Backfill completo (descarga de internet):
   python loader_backfill.py --desde 2015 --hasta 2026
 
-  # Solo un trimestre concreto ya descargado en local:
-  python loader_backfill.py --carpeta E:/datos/2023q1
 """
 
 import os
