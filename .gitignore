@@ -1,0 +1,20 @@
+# Las claves reales nunca van al repositorio
+.env
+
+# Basura de Python (y fuente de bugs fantasma — la lección aprendida)
+__pycache__/
+*.pyc
+
+# Datos descargados y salidas locales
+datos/
+*.csv.bak
+
+# Material de desarrollo y de la defensa — no va al repositorio público
+_archivo_desarrollo/
+guion_video*.md
+presentacion_defensa*.html
+
+# Scripts sueltos de diagnóstico puntual (ej. _check_byrn.py) — se
+# archivan en _archivo_desarrollo/ cuando dejan de hacer falta, nunca
+# se quedan en la raíz del proyecto ni suben al repo
+_*.py
