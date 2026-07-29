@@ -229,7 +229,7 @@ Veredicto de interés (no es consejo de inversión):
 
 ## Roadmap (pendiente, en orden de prioridad)
 
-- **Agente Red Team** — tercer agente que impugna el veredicto del Auditor
+
 - **Capa 4 (RAG)** — pgvector ya está instalado y las columnas `embedding`
   de `metricas_trimestrales` y `eventos_8k` ya existen en el schema, con
   su índice `ivfflat` listo. Lo que falta es generar los embeddings en
@@ -256,6 +256,7 @@ Veredicto de interés (no es consejo de inversión):
   clientes y dilución por SBC desde las notas del 10-K
 - **Ranker ML** — sustituir los pesos manuales de la Capa 2 por un modelo
   entrenado con los casos históricos validados y sus retornos reales
+  - **Agente Red Team** — tercer agente que impugna el veredicto del Auditor
 - **Dashboard filtrable por nivel de interés** — hoy el ranking del
   dashboard solo se navega por el score de Capa 2 (`order by score_total
   desc`); falta un filtro/selector por veredicto (MUY_INTERESANTE /
@@ -265,7 +266,7 @@ Veredicto de interés (no es consejo de inversión):
   sistema que responde sin pasar por `verificar_citas()` (es
   conversación libre, no JSON estructurado); habría que forzar al chat
   a citar de forma parseable y reutilizar el mismo verificador
-- **API FastAPI**
+  
 
 ---
 
