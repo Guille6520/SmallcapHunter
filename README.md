@@ -27,8 +27,8 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 ### 1. Clona el repositorio
 
 ```bash
-git clone https://github.com/tu_usuario/smallcap-hunter.git
-cd smallcap-hunter
+git clone https://github.com/Guille6520/SmallcapHunter.git
+cd SmallcapHunter
 ```
 
 ### 2. Instala las dependencias
