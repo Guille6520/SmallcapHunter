@@ -197,16 +197,14 @@ create table metricas_trimestrales (
     texto_mda           text,
 
     -- El embedding del texto narrativo del 10-Q de este trimestre.
-    -- Pensado para la Capa 4 (RAG, todavía pendiente): cuando analizo
-    -- una empresa nueva, buscaría los trimestres históricos más
-    -- similares en el espacio vectorial y los usaría como few-shot
-    -- para el LLM. Por ahora la columna y el índice están montados,
-    -- pero no genero ningún embedding — lo dejé fuera a propósito para
-    -- no mezclar "conseguir el texto limpio" con "vectorizarlo" en la
-    -- misma decisión (ver el docstring de ingesta_10q.py).
-    -- Ojo: la dimensión (1536) hay que confirmarla contra el modelo de
-    -- embeddings que se elija de verdad para la Capa 4 — cambiarla
-    -- después obliga a recrear la columna y el índice ivfflat.
+    -- Capa 4 (RAG): generar_embeddings_rag.py rellena esta columna a
+    -- partir de texto_mda (gemini-embedding-001, 1536 dims fijadas por
+    -- output_dimensionality para encajar en esta columna sin tocar el
+    -- índice). detective.py la consulta en cada análisis nuevo
+    -- (buscar_casos_similares_rag) para traer los trimestres históricos
+    -- más parecidos como few-shot. Queda NULL hasta que se ejecuta el
+    -- backfill — el pipeline funciona igual sin ella, solo sin ese
+    -- contexto adicional (ver embeddings.py).
     embedding           vector(1536),
 
     unique (empresa_id, anio_fiscal, trimestre)
@@ -349,10 +347,9 @@ create table eventos_8k (
     -- verificador de citas tiene contra qué comparar.
     texto       text,
 
-    -- Pensado para el RAG de eventos (Capa 4, pendiente) — mismo estado
-    -- que metricas_trimestrales.embedding: columna e índice montados,
-    -- todavía sin generar. Misma dimensión para que el proveedor que
-    -- elija sirva para los dos corpus a la vez.
+    -- RAG de eventos (Capa 4) — mismo generador que
+    -- metricas_trimestrales.embedding (generar_embeddings_rag.py),
+    -- misma dimensión para que un solo proveedor sirva a los dos corpus.
     embedding   vector(1536),
 
     fecha_registro timestamp default now(),

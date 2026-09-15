@@ -11,25 +11,34 @@ psycopg2-binary==2.9.9      # cliente PostgreSQL
 # Descarga y procesamiento de datos
 requests==2.32.3            # llamadas HTTP a la SEC
 pandas==2.2.3               # TSVs del Form 4
-yfinance                    # datos de mercado (sin pin: rompe a menudo, conviene la última)
+yfinance==0.2.51             # datos de mercado (pinned: sin pin rompía builds de un dia para otro)
 beautifulsoup4==4.12.3      # extracción del MD&A de los 10-Q en HTML
 
-# LLMs (SDKs directos, sin framework intermedio)
+# LLMs (SDKs directos, sin framework intermedio para Groq/Gemini/Claude —
+# solo la orquestación multi-agente de la Capa 3 usa un framework, ver abajo)
 groq                        # Llama 3.3 70B vía Groq
-google-genai                # Gemini Flash (el SDK nuevo; google-generativeai está descontinuado)
+google-genai                # Gemini Flash + gemini-embedding-001 (Capa 4/RAG). El SDK nuevo; google-generativeai está descontinuado
 anthropic                   # Claude Haiku como segundo voto opcional (MODELO_SECUNDARIO=claude)
+
+# Orquestación multi-agente (Capa 3): grafo_capa3.py define el fan-out/
+# fan-in de Detective(s) + Auditor como StateGraph en vez de encadenar
+# subprocesos a mano.
+langgraph==0.2.62
 
 # Utilidades
 python-dotenv==1.0.1        # carga variables de entorno desde .env
 
-# Dashboard (dashboard.py). Las alertas de Telegram no necesitan
-# librería propia: notificador_telegram.py usa requests directamente.
+# Interfaces (dashboard.py y api.py). Las alertas de Telegram no
+# necesitan librería propia: notificador_telegram.py usa requests directamente.
 streamlit==1.41.1
+fastapi==0.115.6
+uvicorn[standard]==0.34.0
+
+# Tests (ver tests/). httpx lo necesita fastapi.testclient.TestClient.
+pytest==8.3.4
+httpx==0.28.1
 
 # --- Roadmap: descomentar cuando exista el componente ---
-# pgvector==0.3.6           # embeddings desde Python (Capa 4)
 # xgboost==2.1.3            # ranker ML de la Capa 2.5
 # scikit-learn==1.6.1       # validación temporal del ranker
-# fastapi==0.115.6
-# uvicorn==0.34.0
 # schedule==1.2.2
