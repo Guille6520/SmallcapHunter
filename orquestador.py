@@ -2,10 +2,16 @@
 orquestador.py — el sistema completo corriendo solo, de la ingesta al
 Telegram, sin que nadie tenga que ir empresa por empresa.
 
-Filosofía: los scripts existentes NO se tocan — el orquestador los
-ejecuta en el mismo orden que la guía de pruebas (es la misma secuencia
-que harías a mano) y añade la única pieza que faltaba: decidir QUÉ
-empresas merecen gasto de LLM en esta pasada.
+Filosofía: los scripts de ingesta e ingesta/scoring NO se tocan — el
+orquestador los ejecuta en el mismo orden que la guía de pruebas (es la
+misma secuencia que harías a mano). La única pieza que sí cambia es la
+fase de agentes: desde que existe grafo_capa3.py, la pasada de 48h ya
+no encadena `detective.py` x2 + `auditor.py` como tres subprocesos
+sueltos — invoca el grafo de LangGraph una vez por ticker (ver
+ejecutar_grafo_paso más abajo), que corre los dos Detectives en
+paralelo y el Auditor cruzado en fan-in. La lógica de cuotas (qué
+modelo se retira del resto de la pasada) sigue viviendo aquí, no en el
+grafo: el grafo no sabe nada de "pasadas", solo de un ticker.
 
 La condición de disparo es lo importante. Re-analizar una empresa sin
 datos nuevos quema cuota gratuita para producir el mismo veredicto,
@@ -38,6 +44,7 @@ Cómo usarlo:
 
 import os
 import sys
+import json
 import time
 import logging
 import argparse
@@ -122,6 +129,63 @@ def ejecutar_paso(nombre: str, argumentos: list, critico: bool) -> bool:
 
     log.info(f">>> {nombre} terminado en {minutos:.1f} min")
     return True
+
+
+def ejecutar_grafo_paso(ticker: str, modelos: list) -> dict:
+    """
+    Como ejecutar_paso, pero para grafo_capa3.py: a diferencia de los
+    demás pasos, necesito leer su resultado (qué Detective falló en
+    concreto), no solo si el subproceso terminó bien — así
+    modelos_caidos puede seguir retirando UN modelo del resto de la
+    pasada en vez de asumir que fallo total = los dos.
+
+    Sigo lanzándolo como subproceso (no como import) por la misma razón
+    que ejecutar_paso: un fallo aquí no debe corromper el estado en
+    memoria del orquestador. La única diferencia es que capturo stdout
+    para parsear la línea RESULTADO_JSON que imprime grafo_capa3.py al
+    terminar — el resto de su salida (logs de detective.py/auditor.py,
+    que grafo_capa3.py hereda vía import) la reenvío tal cual.
+    """
+    comando = [sys.executable, "grafo_capa3.py", "--ticker", ticker, "--modelos", ",".join(modelos)]
+    log.info(f">>> grafo capa3 {ticker}: modelos={modelos}")
+    inicio = time.time()
+
+    resultado = subprocess.run(comando, capture_output=True, text=True)
+    minutos = (time.time() - inicio) / 60
+
+    salida = resultado.stdout or ""
+    for linea in salida.splitlines():
+        print(linea)
+    if resultado.stderr:
+        for linea in resultado.stderr.splitlines():
+            print(linea)
+
+    resumen = None
+    for linea in salida.splitlines():
+        if linea.startswith("RESULTADO_JSON: "):
+            try:
+                resumen = json.loads(linea[len("RESULTADO_JSON: "):])
+            except json.JSONDecodeError:
+                pass
+
+    if resultado.returncode != 0 or resumen is None:
+        log.warning(
+            f">>> grafo capa3 {ticker} FALLÓ (código {resultado.returncode}) "
+            "o no devolvió resumen — asumo que fallaron todos los modelos pedidos"
+        )
+        exitos = {modelo: False for modelo in modelos}
+        exitos["auditorias_guardadas"] = 0
+        return exitos
+
+    log.info(f">>> grafo capa3 {ticker} terminado en {minutos:.1f} min")
+    exitos = {}
+    if "groq" in modelos:
+        exitos["groq"] = resumen.get("detective_groq_ok", False)
+    modelos_secundarios = [m for m in modelos if m != "groq"]
+    if modelos_secundarios:
+        exitos[modelos_secundarios[0]] = resumen.get("detective_secundario_ok", False)
+    exitos["auditorias_guardadas"] = resumen.get("auditorias_guardadas", 0)
+    return exitos
 
 
 def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
@@ -241,15 +305,18 @@ def fase_agentes(config: dict) -> dict:
             continue
 
         log.info(f"--- Analizando {ticker} (score {score}, faltan: {modelos_a_ejecutar}) ---")
+
+        # Un solo paso: el grafo corre los Detectives pendientes en
+        # paralelo y el Auditor cruzado en fan-in (ver grafo_capa3.py).
+        # Antes esto eran 2-3 subprocesos con una pausa fija entre cada
+        # uno; ahora es un subproceso que hace las tres cosas y yo solo
+        # pauso una vez al terminar. La lógica de qué modelo se retira
+        # de la pasada por cuota agotada sigue viviendo aquí.
+        exitos = ejecutar_grafo_paso(ticker, modelos_a_ejecutar)
         algun_exito = False
 
         for modelo in modelos_a_ejecutar:
-            ok = ejecutar_paso(
-                f"detective {modelo} {ticker}",
-                ["detective.py", "--ticker", ticker, "--modelo", modelo],
-                critico=False,
-            )
-            if ok:
+            if exitos.get(modelo):
                 algun_exito = True
             else:
                 # Asumo cuota agotada. Es la causa abrumadoramente más
@@ -257,15 +324,8 @@ def fase_agentes(config: dict) -> dict:
                 # posponer ese modelo a la siguiente pasada.
                 modelos_caidos.add(modelo)
                 log.warning(f"Retiro a {modelo} del resto de la pasada (posible cuota diaria agotada)")
-            time.sleep(config["pausa_llm"])
 
-        # El auditor cruza modelos: solo tiene sentido si queda al menos
-        # uno vivo para auditar. Él mismo salta lo ya auditado.
-        if algun_exito and len(modelos_caidos) < 2:
-            ejecutar_paso(
-                f"auditor {ticker}", ["auditor.py", "--ticker", ticker], critico=False
-            )
-            time.sleep(config["pausa_llm"])
+        time.sleep(config["pausa_llm"])
 
         if algun_exito:
             analizadas += 1

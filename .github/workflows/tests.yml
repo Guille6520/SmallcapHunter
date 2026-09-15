@@ -1,0 +1,29 @@
+name: tests
+
+# La suite de tests/ es deliberadamente offline (sin BD, sin API keys,
+# sin red — ver tests/conftest.py y el docstring de cada archivo): eso
+# es lo que la hace apta para CI. validacion_recall_ganadoras.py y los
+# demás scripts de validación histórica (30-60 min, red + Postgres) NO
+# corren aquí a propósito, esos se ejecutan a mano.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt
+
+      - name: Ejecutar tests
+        run: pytest -v

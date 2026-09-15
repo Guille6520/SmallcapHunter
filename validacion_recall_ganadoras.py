@@ -1,7 +1,13 @@
 """
-test_ganadoras.py — el test del recall: de las empresas que SÍ
-multiplicaron desde small cap dentro de mi ventana de datos, ¿cuántas
-mostraron mi señal (cluster de insiders) ANTES de subir?
+validacion_recall_ganadoras.py — el test del recall: de las empresas
+que SÍ multiplicaron desde small cap dentro de mi ventana de datos,
+¿cuántas mostraron mi señal (cluster de insiders) ANTES de subir?
+
+Nota de nombre: se llamó test_ganadoras.py originalmente, pero es un
+experimento de validación (30-60 min, red + BD), no un test unitario —
+lo renombré para que pytest no lo confunda con la suite de tests/
+(que sí es rápida y offline) y para que quien mire el repo no piense
+que esto es lo que corre en CI.
 
 Por qué existe: la pregunta "¿habría cazado a Tesla/Amazon/Netflix?" no
 tiene respuesta científica — su fase pre-explosiva es anterior al Form 4
@@ -35,8 +41,8 @@ Sesgos que declaro:
 Es un script de solo lectura. No toca ninguna tabla.
 
 Cómo usarlo:
-  python test_ganadoras.py --limite 50      # prueba rápida
-  python test_ganadoras.py                  # completo (~30-60 min, yfinance)
+  python validacion_recall_ganadoras.py --limite 50      # prueba rápida
+  python validacion_recall_ganadoras.py                  # completo (~30-60 min, yfinance)
 """
 
 import os

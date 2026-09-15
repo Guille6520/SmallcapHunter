@@ -19,12 +19,14 @@ Qué hago, paso a paso:
      de filing — un 10-Q siempre se presenta semanas después de que
      cierre el trimestre que describe)
   5. Guardo el texto en la columna texto_mda. El embedding lo dejo para
-     un paso posterior aparte, porque depende de qué proveedor de
-     embeddings se decida usar (Groq/Gemini no son OpenAI).
+     un paso posterior aparte (generar_embeddings_rag.py), porque
+     depende de qué proveedor de embeddings se decida usar (Groq/Gemini
+     no son OpenAI).
 
 No genero ningún embedding aquí a propósito — separar "conseguir el
 texto limpio" de "vectorizarlo" evita mezclar dos decisiones distintas
-en un mismo script.
+en un mismo script. Ejecuta generar_embeddings_rag.py después de este
+script para que la Capa 4 (RAG) tenga algo que buscar.
 
 Cómo usarlo:
   python ingesta_10q.py

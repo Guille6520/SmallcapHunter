@@ -38,6 +38,7 @@ import unicodedata
 import psycopg2
 
 from notificador_telegram import notificar_analisis
+from embeddings import generar_embedding_consulta, vector_a_literal_pgvector
 from dotenv import load_dotenv
 
 # Cargo el .env de la carpeta si existe — así las claves no dependen de
@@ -72,6 +73,14 @@ MAX_CARACTERES_MDA = 12000
 # trimestres de sobra; más allá es histórico que el MD&A ya recoge.
 MAX_EVENTOS_8K = 5
 MAX_CARACTERES_EVENTO = 3000
+
+# Capa 4 (RAG): cuántos trimestres históricos similares traigo como
+# few-shot, y cuánto de cada uno le muestro al modelo. Tres casos son
+# suficientes para dar contexto de patrón sin inflar el prompt — el
+# objetivo es "esto se parece a X", no sustituir el análisis con más
+# texto que el propio MD&A que se está evaluando.
+K_CASOS_SIMILARES_RAG = 3
+MAX_CARACTERES_CASO_SIMILAR = 1500
 
 # Qué significa cada item para que el LLM no tenga que adivinarlo del
 # número — la numeración de la SEC no es exactamente autoexplicativa.
@@ -321,7 +330,93 @@ SEÑALES DE MERCADO ADICIONALES (short interest, dilución potencial, accionista
 {cuerpo}"""
 
 
-def construir_prompt(contexto: dict) -> str:
+def buscar_casos_similares_rag(conn, empresa_id: int, texto_mda: str, k: int = K_CASOS_SIMILARES_RAG) -> list:
+    """
+    Capa 4 (RAG): busco, por similitud semántica de embeddings (pgvector,
+    distancia coseno), los trimestres históricos que más se parecen al
+    MD&A que estoy analizando ahora mismo — de cualquier empresa, incluida
+    la propia si tuvo trimestres previos ya embebidos.
+
+    Es opcional por diseño, con el mismo criterio que los 8-K o los
+    13D/G: si generar_embeddings_rag.py todavía no se ha ejecutado (no
+    hay embeddings en la BD), o la API de embeddings falla o no está
+    configurada, el Detective sigue funcionando exactamente igual que
+    antes de que existiera la Capa 4 — devuelvo lista vacía en vez de
+    romper el análisis.
+    """
+    if not texto_mda:
+        return []
+
+    try:
+        vector_consulta = generar_embedding_consulta(texto_mda[:MAX_CARACTERES_MDA])
+    except Exception as e:
+        log.warning(f"RAG: no pude generar el embedding de consulta ({e}) — sigo sin casos similares")
+        return []
+
+    literal = vector_a_literal_pgvector(vector_consulta)
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            select e.ticker, e.nombre, mt.anio_fiscal, mt.trimestre, mt.texto_mda,
+                   mt.embedding <=> %s::vector as distancia
+            from metricas_trimestrales mt
+            join empresas e on e.id = mt.empresa_id
+            where mt.embedding is not null
+              and mt.empresa_id != %s
+              and mt.texto_mda is not null
+            order by mt.embedding <=> %s::vector
+            limit %s
+            """,
+            (literal, empresa_id, literal, k),
+        )
+        filas = cur.fetchall()
+    except psycopg2.Error as e:
+        conn.rollback()
+        log.warning(f"RAG: consulta de similitud falló ({e}) — sigo sin casos similares")
+        return []
+    finally:
+        cur.close()
+
+    return [
+        {
+            "ticker": ticker, "nombre": nombre, "anio_fiscal": anio,
+            "trimestre": trimestre, "texto_mda": texto, "distancia": float(distancia),
+        }
+        for ticker, nombre, anio, trimestre, texto, distancia in filas
+    ]
+
+
+def formatear_casos_similares_rag(casos: list) -> str:
+    """
+    Bloque de contexto con los casos históricos recuperados por RAG.
+    Dejo explícito que es material de referencia y NO una fuente citable
+    — el verificador de citas solo comprueba contra el texto_fuente_citas
+    de la propia empresa, así que una cita sacada de aquí se marcaría
+    (correctamente) como no verificada. Se lo digo al modelo para que no
+    se confunda y acabe penalizado por mi propio contexto.
+    """
+    if not casos:
+        return ""
+
+    bloques = []
+    for caso in casos:
+        extracto = (caso["texto_mda"] or "")[:MAX_CARACTERES_CASO_SIMILAR]
+        bloques.append(
+            f"[{caso['ticker']} — {caso['nombre']}, T{caso['trimestre']} {caso['anio_fiscal']} "
+            f"— similitud semántica: {(1 - caso['distancia']) * 100:.0f}%]\n{extracto}"
+        )
+    cuerpo = "\n\n".join(bloques)
+
+    return f"""
+
+CASOS HISTÓRICOS SIMILARES (Capa 4 — recuperados por similitud semántica de embeddings, no por palabras clave). Son de OTRAS empresas en OTROS momentos, para darte contexto de patrón — NO son fuente citable de esta empresa, así que no incluyas citas literales de este bloque en tu respuesta:
+\"\"\"
+{cuerpo}
+\"\"\""""
+
+
+def construir_prompt(contexto: dict, casos_similares_texto: str = "") -> str:
     """
     Construyo el prompt con instrucciones explícitas de citar texto
     literal — sin eso, no tengo nada que verificar después.
@@ -357,7 +452,7 @@ COMPRAS DE INSIDERS RECIENTES:
 TEXTO MD&A DEL ÚLTIMO 10-Q (puede estar recortado o ser el documento completo si no se pudo aislar la sección exacta):
 \"\"\"
 {texto_mda}
-\"\"\"{formatear_eventos_8k(contexto)}{formatear_senales_mercado(contexto)}
+\"\"\"{formatear_eventos_8k(contexto)}{formatear_senales_mercado(contexto)}{casos_similares_texto}
 
 Tu tarea:
 1. Identifica un catalizador NO OBVIO que el texto sugiera (algo que el mercado podría no estar valorando todavía)
@@ -575,7 +670,12 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
         log.error(f"{ticker} no tiene texto_mda — ejecuta ingesta_10q.py primero")
         return None
 
-    prompt = construir_prompt(contexto)
+    casos_similares = buscar_casos_similares_rag(
+        conn, contexto["empresa_id"], contexto["texto_mda"]
+    )
+    if casos_similares:
+        log.info(f"RAG: {len(casos_similares)} casos históricos similares encontrados para {ticker}")
+    prompt = construir_prompt(contexto, formatear_casos_similares_rag(casos_similares))
 
     log.info(f"Llamando a {modelo} para {ticker}...")
     texto_respuesta = llamar_modelo(modelo, prompt)
