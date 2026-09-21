@@ -63,24 +63,37 @@ def _nodo_detective(modelo: str, campo_resultado: str, campo_fallo: str):
     modelo le toca correr y en qué claves del estado escribe. Groq y el
     modelo secundario comparten la misma lógica de nodo — solo cambia
     el modelo — así que no duplico el cuerpo por cada uno.
+
+    Cada nodo abre su PROPIA conexión a la base de datos en vez de usar
+    state["conn"]. LangGraph ejecuta los dos nodos Detective del mismo
+    superstep en paralelo (fan-out real desde START), y una conexión
+    psycopg2 es una única transacción: si compartieran la conexión, el
+    rollback de un nodo tras un fallo (p.ej. rate-limit del LLM) podía
+    deshacer el INSERT todavía no confirmado del otro nodo, que además
+    ya había mandado el aviso de Telegram como si se hubiera guardado.
+    Con una conexión por nodo, cada transacción queda aislada de verdad.
     """
     def nodo(state: EstadoCapa3) -> dict:
         if modelo not in state["modelos_a_ejecutar"]:
             return {}
 
+        conn = detective.conectar_db()
         try:
-            resultado = detective.ejecutar_detective(state["conn"], state["ticker"], modelo)
-        except Exception as e:
-            log.error(f"Detective ({modelo}) sobre {state['ticker']}: excepción — {e}")
-            return {campo_fallo: True}
+            try:
+                resultado = detective.ejecutar_detective(conn, state["ticker"], modelo)
+            except Exception as e:
+                log.error(f"Detective ({modelo}) sobre {state['ticker']}: excepción — {e}")
+                return {campo_fallo: True}
 
-        if not resultado:
-            return {campo_fallo: True}
+            if not resultado:
+                return {campo_fallo: True}
 
-        detective.guardar_resultado(
-            state["conn"], resultado["contexto"]["empresa_id"], modelo, resultado
-        )
-        return {campo_resultado: resultado}
+            detective.guardar_resultado(
+                conn, resultado["contexto"]["empresa_id"], modelo, resultado
+            )
+            return {campo_resultado: resultado}
+        finally:
+            conn.close()
 
     return nodo
 
