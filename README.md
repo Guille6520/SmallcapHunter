@@ -33,7 +33,7 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 
 - Python 3.11+
 - Docker Desktop
-- Cuenta gratuita en [Groq](https://console.groq.com) (Llama 3.3 70B)
+- Cuenta gratuita en [Groq](https://console.groq.com) (GPT-OSS 120B)
 - Cuenta gratuita en [Google AI Studio](https://aistudio.google.com) (Gemini Flash)
 
 ---
@@ -310,7 +310,7 @@ Capa 1: filtros binarios (market cap 50M-2B, bolsa, cluster 3+ insiders/60d, C-s
 Capa 2: scoring numérico (precio 52W + convicción + aceleración + catalizador)
       ↓   ~112 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
           corte deliberadamente ancho: el embudo fino lo hacen los agentes)
-Capa 3: Detective → Auditor cruzado (Groq/Llama 3.3 y Gemini Flash, votos ciegos),
+Capa 3: Detective → Auditor cruzado (Groq/GPT-OSS 120B y Gemini Flash, votos ciegos),
         orquestados como un grafo de LangGraph (grafo_capa3.py: fan-out a
         los dos Detectives, fan-in al Auditor cruzado)
         con el MD&A del 10-Q + eventos 8-K + señales de mercado (short

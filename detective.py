@@ -61,7 +61,7 @@ DB_CONFIG = {
 }
 
 # Trunco el MD&A a un tamaño razonable de tokens. La mayoría de modelos
-# gratuitos/rápidos (Llama 3.3 70B en Groq, Gemini Flash) tienen ventanas
+# gratuitos/rápidos (GPT-OSS 120B en Groq, Gemini Flash) tienen ventanas
 # de contexto grandes, pero no quiero pagar latencia ni coste por
 # secciones de 50.000 caracteres cuando el fallback trajo el documento
 # completo en vez de solo el MD&A.
@@ -477,13 +477,20 @@ Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, con esta 
 
 def llamar_groq(prompt: str) -> str:
     """
-    Llamo a Llama 3.3 70B vía Groq. La librería groq sigue una interfaz
+    Llamo a GPT-OSS 120B vía Groq. La librería groq sigue una interfaz
     muy similar a la de OpenAI (chat.completions.create).
+
+    Usaba Llama 3.3 70B, pero Groq lo pasó a su tier Enterprise (ya no
+    es accesible con una cuenta gratuita) -- confirmado consultando
+    /openai/v1/models con esta misma clave, que ya no lo lista. De los
+    modelos que sí devuelve esa llamada, GPT-OSS 120B es el más
+    parecido en tamaño y el único pensado para este tipo de tarea (los
+    demás son audio, moderación o modelos pequeños de nicho).
     """
     from groq import Groq
     cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
     respuesta = cliente.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=[{"role": "user", "content": prompt}],
         temperature=0.2,
         response_format={"type": "json_object"},
