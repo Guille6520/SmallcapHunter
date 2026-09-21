@@ -27,7 +27,7 @@ import os
 import time
 import logging
 import argparse
-from typing import Optional
+from typing import Optional, Union
 
 import yfinance as yf
 import psycopg2
@@ -58,6 +58,15 @@ DB_CONFIG = {
 # tickers seguidos — más lento pero fiable.
 PAUSA_ENTRE_TICKERS = 0.6
 
+# Un ticker sin datos aislado es normal (deslistado, cambio de ticker).
+# Pero si esto se dispara varias veces SEGUIDAS ya no es un problema de
+# esos tickers concretos, es Yahoo bloqueándome — y en ese estado, los
+# siguientes cientos de tickers van a fallar igual. Mejor cortar el
+# lote pronto (la siguiente pasada los reintenta, ver
+# obtener_empresas_pendientes) que gastar una hora entera en reintentos
+# que no van a funcionar mientras dure el bloqueo.
+UMBRAL_RACHA_BLOQUEO = 8
+
 
 def conectar_db():
     conn = psycopg2.connect(**DB_CONFIG)
@@ -65,12 +74,21 @@ def conectar_db():
     return conn
 
 
-def obtener_datos_mercado(ticker: str) -> Optional[dict]:
+def obtener_datos_mercado(ticker: str) -> Union[dict, None, bool]:
     """
     Descarga market cap, precio, rango de 52 semanas, volumen medio y
-    bolsa desde yfinance. Devuelvo None si el ticker no existe o no
-    tiene ninguno de los datos clave — no es un error de red, es que
-    la empresa probablemente ya no cotiza o cambió de ticker.
+    bolsa desde yfinance.
+
+    Devuelvo None cuando el ticker no existe (404 confirmado) o no
+    tiene ninguno de los datos clave — la empresa probablemente ya no
+    cotiza. Devuelvo False cuando agoté los 3 intentos por un error que
+    NO es un 404: normalmente es Yahoo devolviendo 429 (rate limit) sin
+    decirlo con claridad (yfinance lo enmascara como JSONDecodeError al
+    intentar parsear una respuesta de error como si fuera JSON). La
+    diferencia le importa a quien me llama: un ticker sin datos es
+    normal y esperable en un histórico de 10 años; una racha de "False"
+    seguidos es Yahoo bloqueándome, no un problema de esos tickers en
+    concreto.
     """
     for intento in range(3):
         try:
@@ -140,7 +158,7 @@ def obtener_datos_mercado(ticker: str) -> Optional[dict]:
             log.warning(f"Intento {intento+1}/3 fallido para {ticker}: {e}")
             time.sleep(2 * (intento + 1))
 
-    return None
+    return False
 
 
 def guardar_datos_mercado(conn, empresa_id: int, datos: dict) -> bool:
@@ -246,6 +264,7 @@ def main():
         log.info(f"Empresas a procesar: {len(empresas)}")
 
         ok, sin_datos, error = 0, 0, 0
+        rachas_posible_bloqueo = 0
 
         for i, (empresa_id, ticker) in enumerate(empresas, 1):
             if not ticker or not ticker.strip():
@@ -254,16 +273,32 @@ def main():
 
             try:
                 datos = obtener_datos_mercado(ticker.strip())
-                if datos:
+                if datos is False:
+                    # Agotó los 3 intentos sin ser un 404 — huele a
+                    # rate limit de Yahoo, no a un ticker concreto roto.
+                    error += 1
+                    rachas_posible_bloqueo += 1
+                elif datos:
                     if guardar_datos_mercado(conn, empresa_id, datos):
                         ok += 1
                     else:
                         error += 1
+                    rachas_posible_bloqueo = 0
                 else:
                     sin_datos += 1
+                    rachas_posible_bloqueo = 0
             except Exception as e:
                 log.error(f"Error inesperado con {ticker}: {e}")
                 error += 1
+
+            if rachas_posible_bloqueo >= UMBRAL_RACHA_BLOQUEO:
+                log.warning(
+                    f"{rachas_posible_bloqueo} fallos seguidos que no son 404 — "
+                    "probable rate limit de Yahoo Finance. Corto el lote aquí "
+                    f"({i}/{len(empresas)} procesados); la siguiente pasada "
+                    "retomará lo pendiente en vez de machacar contra el bloqueo."
+                )
+                break
 
             if i % 100 == 0:
                 log.info(f"Progreso: {i}/{len(empresas)} — ok: {ok} | sin datos: {sin_datos} | error: {error}")
