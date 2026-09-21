@@ -117,7 +117,7 @@ def chat_groq(mensajes: list) -> str:
     from groq import Groq
     cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
     respuesta = cliente.chat.completions.create(
-        model="llama-3.3-70b-versatile",
+        model="openai/gpt-oss-120b",
         messages=mensajes,
         temperature=0.4,
     )
