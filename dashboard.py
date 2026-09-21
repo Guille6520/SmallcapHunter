@@ -114,14 +114,24 @@ def leer_corte(conn=None) -> int:
 # ---------- llamadas LLM para el chat (texto libre, sin JSON) ----------
 
 def chat_groq(mensajes: list) -> str:
-    from groq import Groq
-    cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
-    respuesta = cliente.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=mensajes,
-        temperature=0.4,
+    # "groq" es el nombre del hueco, no el proveedor real -- ver
+    # detective.llamar_groq() para el porqué del cambio a OpenRouter.
+    import requests
+    respuesta = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+        json={
+            "model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "messages": mensajes,
+            "temperature": 0.4,
+        },
+        timeout=90,
     )
-    return respuesta.choices[0].message.content
+    respuesta.raise_for_status()
+    data = respuesta.json()
+    if "choices" not in data:
+        raise RuntimeError(f"OpenRouter no devolvió 'choices': {data}")
+    return data["choices"][0]["message"]["content"]
 
 
 def chat_gemini(mensajes: list) -> str:
@@ -494,9 +504,12 @@ def main():
         st.divider()
         if st.button("Probar alerta de Telegram"):
             ok = enviar_telegram("🦄 SmallCap Hunter: prueba de alerta desde el dashboard")
-            st.success("Enviada — mira tu Telegram") if ok else st.warning(
-                "No se envió. ¿TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID están en el entorno?"
-            )
+            if ok:
+                st.success("Enviada — mira tu Telegram")
+            else:
+                st.warning(
+                    "No se envió. ¿TELEGRAM_BOT_TOKEN y TELEGRAM_CHAT_ID están en el entorno?"
+                )
         st.caption("Los avisos automáticos los mandan detective.py y auditor.py al terminar cada análisis.")
 
     if vista == "📊 Panorama":
