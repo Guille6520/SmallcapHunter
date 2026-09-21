@@ -29,11 +29,27 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 
 ---
 
+## Capturas
+
+**Panorama** — el embudo completo en un vistazo: cuántas empresas hay en cada capa y los últimos veredictos de los agentes.
+
+![Panorama del dashboard: métricas del embudo y ranking de Capa 2](docs/screenshots/panorama.webp)
+
+**Ficha de empresa** — scores, fundamentales, compras de insiders y el historial completo de análisis del Detective y el Auditor, con citas verificadas.
+
+![Ficha de empresa BUILD-A-BEAR WORKSHOP con scores, gráficos y análisis de los agentes](docs/screenshots/empresa.webp)
+
+**Chat** — pregunta libre sobre cualquier candidata, con el mismo contexto que ve el Detective.
+
+![Chat sobre una empresa respondiendo cuántos insiders compraron en los últimos 3 meses](docs/screenshots/chat.webp)
+
+---
+
 ## Requisitos previos
 
 - Python 3.11+
 - Docker Desktop
-- Cuenta gratuita en [Groq](https://console.groq.com) (GPT-OSS 120B)
+- Cuenta gratuita en [OpenRouter](https://openrouter.ai) (Nemotron 3 Super 120B)
 - Cuenta gratuita en [Google AI Studio](https://aistudio.google.com) (Gemini Flash)
 
 ---
@@ -310,7 +326,7 @@ Capa 1: filtros binarios (market cap 50M-2B, bolsa, cluster 3+ insiders/60d, C-s
 Capa 2: scoring numérico (precio 52W + convicción + aceleración + catalizador)
       ↓   ~112 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
           corte deliberadamente ancho: el embudo fino lo hacen los agentes)
-Capa 3: Detective → Auditor cruzado (Groq/GPT-OSS 120B y Gemini Flash, votos ciegos),
+Capa 3: Detective → Auditor cruzado (Nemotron 120B vía OpenRouter y Gemini Flash, votos ciegos),
         orquestados como un grafo de LangGraph (grafo_capa3.py: fan-out a
         los dos Detectives, fan-in al Auditor cruzado)
         con el MD&A del 10-Q + eventos 8-K + señales de mercado (short

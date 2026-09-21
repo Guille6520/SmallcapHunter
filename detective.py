@@ -461,7 +461,7 @@ Tu tarea:
 4. CITAS: para cada afirmación clave de tu tesis, incluye una cita literal corta (máximo 20 palabras) del texto MD&A, de los eventos 8-K o de los documentos 13D/G de arriba que la respalde. Copia el texto EXACTO, sin añadir referencias, fuentes ni corchetes al final, y sin combinar fragmentos de sitios distintos. Si no puedes citar el texto original, no hagas la afirmación.
 5. Da un veredicto preliminar de interés para investigación (NO es consejo de inversión): MUY_INTERESANTE, INTERESANTE, o NADA_INTERESANTE
 
-Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, con esta estructura exacta:
+Responde ÚNICAMENTE con un JSON válido, en español, sin texto antes ni después, con esta estructura exacta:
 {{
   "catalizador_no_obvio": "string",
   "tesis_inversion": "string",
@@ -477,25 +477,35 @@ Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, con esta 
 
 def llamar_groq(prompt: str) -> str:
     """
-    Llamo a GPT-OSS 120B vía Groq. La librería groq sigue una interfaz
-    muy similar a la de OpenAI (chat.completions.create).
-
-    Usaba Llama 3.3 70B, pero Groq lo pasó a su tier Enterprise (ya no
-    es accesible con una cuenta gratuita) -- confirmado consultando
-    /openai/v1/models con esta misma clave, que ya no lo lista. De los
-    modelos que sí devuelve esa llamada, GPT-OSS 120B es el más
-    parecido en tamaño y el único pensado para este tipo de tarea (los
-    demás son audio, moderación o modelos pequeños de nicho).
+    Sigo llamando a esta función "groq" porque es el nombre del hueco
+    (el segundo voto ciego, cruzado con Gemini), no el proveedor real
+    -- ya cambió una vez hoy de Llama 3.3 70B a GPT-OSS 120B bajo el
+    mismo nombre. Ahora sirvo el modelo vía OpenRouter en vez de Groq
+    directamente: Groq capaba las peticiones grandes de este proyecto a
+    8000 tokens por request (nuestro prompt real pide 9000-10000) y no
+    dejaba subir de tier ("Developer tier upgrades are temporarily
+    unavailable"). Probado en real contra BBW: aguanta el prompt
+    completo, responde en español con la instrucción de construir_prompt,
+    y sigue el modo JSON de forma fiable -- es de los pocos modelos
+    gratuitos de OpenRouter que declara soporte oficial de response_format.
     """
-    from groq import Groq
-    cliente = Groq(api_key=os.environ["GROQ_API_KEY"])
-    respuesta = cliente.chat.completions.create(
-        model="openai/gpt-oss-120b",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.2,
-        response_format={"type": "json_object"},
+    import requests
+    respuesta = requests.post(
+        "https://openrouter.ai/api/v1/chat/completions",
+        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
+        json={
+            "model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.2,
+            "response_format": {"type": "json_object"},
+        },
+        timeout=90,
     )
-    return respuesta.choices[0].message.content
+    respuesta.raise_for_status()
+    data = respuesta.json()
+    if "choices" not in data:
+        raise RuntimeError(f"OpenRouter no devolvió 'choices': {data}")
+    return data["choices"][0]["message"]["content"]
 
 
 def llamar_gemini(prompt: str) -> str:
