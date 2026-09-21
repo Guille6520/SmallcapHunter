@@ -23,6 +23,12 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 
 ---
 
+## Arquitectura
+
+![Cómo decide SmallCap Hunter: tablero de investigación desde la evidencia pública de la SEC hasta el veredicto final](docs/architecture.svg)
+
+---
+
 ## Requisitos previos
 
 - Python 3.11+
