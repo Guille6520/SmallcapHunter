@@ -30,7 +30,7 @@ python-dotenv==1.0.1        # carga variables de entorno desde .env
 
 # Interfaces (dashboard.py y api.py). Las alertas de Telegram no
 # necesitan librería propia: notificador_telegram.py usa requests directamente.
-streamlit==1.41.1
+streamlit==1.45.1
 fastapi==0.115.6
 uvicorn[standard]==0.34.0
 
