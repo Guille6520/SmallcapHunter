@@ -22,6 +22,21 @@ def modelo_secundario_fijo(monkeypatch):
     monkeypatch.delenv("MODELO_SECUNDARIO", raising=False)
 
 
+class _ConexionFalsa:
+    """Doble de psycopg2.connection: cada nodo Detective abre y cierra
+    su propia conexión (ver grafo_capa3._nodo_detective), así que los
+    tests de orquestación necesitan algo con .close() sin tocar una BD
+    real — el resto de la lógica (ejecutar_detective, guardar_resultado)
+    ya está simulada aparte."""
+    def close(self):
+        pass
+
+
+@pytest.fixture(autouse=True)
+def conectar_db_falsa(monkeypatch):
+    monkeypatch.setattr(detective, "conectar_db", lambda: _ConexionFalsa())
+
+
 def _resultado_detective_falso(empresa_id=1):
     return {
         "contexto": {"empresa_id": empresa_id, "ticker": "FAKE"},
