@@ -488,6 +488,16 @@ def llamar_groq(prompt: str) -> str:
     completo, responde en español con la instrucción de construir_prompt,
     y sigue el modo JSON de forma fiable -- es de los pocos modelos
     gratuitos de OpenRouter que declara soporte oficial de response_format.
+
+    Es un modelo "razonador" (piensa en cadena antes de responder), y
+    los tokens de razonamiento cuentan contra max_tokens -- si no fijo
+    uno explícito y generoso, el modelo puede gastárselo todo pensando
+    y devolver content: null (lo vi en real: 'NoneType' object has no
+    attribute 'find' al parsear). max_tokens alto + reasoning.effort
+    bajo (que solo ~20% del presupuesto se vaya en pensar, según la
+    doc de OpenRouter) reduce mucho el riesgo, aunque no lo elimina del
+    todo -- por eso parsear_json_llm() también sabe tratar una
+    respuesta vacía sin reventar.
     """
     import requests
     respuesta = requests.post(
@@ -498,6 +508,8 @@ def llamar_groq(prompt: str) -> str:
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "response_format": {"type": "json_object"},
+            "max_tokens": 4000,
+            "reasoning": {"effort": "low"},
         },
         timeout=90,
     )
@@ -590,7 +602,16 @@ def parsear_json_llm(texto: str) -> dict:
     JSON ("Espero que este análisis...") y un json.loads directo casca
     con "Extra data" aunque el JSON esté perfecto. raw_decode para
     donde termina el objeto y no le importa lo que venga detrás.
+
+    texto puede venir None -- lo he visto con Nemotron (vía OpenRouter)
+    cuando el modelo agota el presupuesto de tokens razonando y no le
+    queda nada para la respuesta final. Lo trato como el mismo tipo de
+    fallo que un JSON roto (JSONDecodeError), no como un crash aparte,
+    para que caiga en el except que ya tienen ejecutar_detective() y
+    auditor.py en vez de reventar con un AttributeError sin explicación.
     """
+    if not texto:
+        raise json.JSONDecodeError("el modelo devolvió una respuesta vacía", texto or "", 0)
     inicio = texto.find("{")
     if inicio == -1:
         raise json.JSONDecodeError("sin objeto JSON en la respuesta", texto, 0)
