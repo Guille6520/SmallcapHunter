@@ -119,7 +119,14 @@ create table empresas (
     -- (marcar_sin_datos), que es quien sabe el motivo exacto de la baja.
     activa              boolean default true,
     fecha_baja          timestamp,
-    motivo_baja         text
+    motivo_baja         text,
+
+    -- Resumen en lenguaje llano de a qué se dedica la empresa (qué
+    -- vende, a quién, en qué sector) -- no es parte del análisis de
+    -- inversión, así que no pasa por el Detective ni el verificador de
+    -- citas. Lo genera dashboard.py la primera vez que se mira la
+    -- empresa en la pestaña de candidatas, y lo cachea aquí.
+    resumen_negocio     text
 );
 
 create index on empresas (ticker);

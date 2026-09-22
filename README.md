@@ -396,6 +396,13 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   sistema que responde sin pasar por `verificar_citas()` (es
   conversación libre, no JSON estructurado); habría que forzar al chat
   a citar de forma parseable y reutilizar el mismo verificador
+- **Monitorización de calidad por modelo** — comparar la distribución de
+  veredictos (MUY_INTERESANTE/INTERESANTE/NADA_INTERESANTE/ALUCINACION)
+  entre modelos y en el tiempo, para detectar si un cambio de proveedor
+  (p.ej. Groq → OpenRouter) afecta a la calidad real de los análisis y
+  no solo a la disponibilidad — con un puñado de tickers no hay muestra
+  suficiente, hace falta más volumen de pasadas para que la comparación
+  sea fiable.
   
 
 ---

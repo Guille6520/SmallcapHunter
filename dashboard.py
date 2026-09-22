@@ -88,7 +88,10 @@ st.markdown("""
 @st.cache_resource
 def conectar_db():
     conn = psycopg2.connect(**DB_CONFIG)
-    conn.autocommit = True   # solo lecturas; sin transacciones colgadas
+    # autocommit: sobre todo lecturas, con una excepción -- el cacheo de
+    # resumen_negocio en obtener_resumen_negocio() sí escribe. Es una
+    # sola sentencia de bajo riesgo, no necesita transacción explícita.
+    conn.autocommit = True
     return conn
 
 
@@ -116,6 +119,9 @@ def leer_corte(conn=None) -> int:
 def chat_groq(mensajes: list) -> str:
     # "groq" es el nombre del hueco, no el proveedor real -- ver
     # detective.llamar_groq() para el porqué del cambio a OpenRouter.
+    # max_tokens + reasoning.effort bajo: mismo motivo que en
+    # detective.llamar_groq() -- sin esto, Nemotron puede gastarse el
+    # presupuesto entero razonando y devolver una respuesta vacía.
     import requests
     respuesta = requests.post(
         "https://openrouter.ai/api/v1/chat/completions",
@@ -124,6 +130,8 @@ def chat_groq(mensajes: list) -> str:
             "model": "nvidia/nemotron-3-super-120b-a12b:free",
             "messages": mensajes,
             "temperature": 0.4,
+            "max_tokens": 4000,
+            "reasoning": {"effort": "low"},
         },
         timeout=90,
     )
@@ -198,6 +206,54 @@ VEREDICTOS DE LOS AGENTES:
 
 MD&A DEL ÚLTIMO 10-Q (puede estar recortado):
 \"\"\"{mda}\"\"\""""
+
+
+def obtener_resumen_negocio(conn, empresa_id: int, contexto: dict) -> str:
+    """Resumen corto de a qué se dedica la empresa, en lenguaje llano.
+    No es parte del análisis de inversión (no pasa por el Detective ni
+    el verificador de citas) -- se genera una vez y se cachea en
+    empresas.resumen_negocio.
+
+    Pruebo Groq/OpenRouter primero y caigo a Gemini si falla -- al
+    revés de lo esperado a propósito: la cuota de Gemini (20/día) la
+    comparte el pipeline real (Detective/Auditor), y no quiero que
+    esta función, que es un extra cosmético, se la coma antes de que
+    la necesite un análisis de verdad. La cuota de OpenRouter (50/día,
+    por petición) es más barata de gastar aquí.
+    """
+    cur = conn.cursor()
+    cur.execute("select resumen_negocio from empresas where id = %s", (empresa_id,))
+    existente = cur.fetchone()[0]
+    if existente:
+        cur.close()
+        return existente
+
+    prompt = f"""Explica en 2-3 frases, en español y sin jerga financiera, a qué se dedica esta empresa: qué vende, a quién, y en qué sector opera. Básate solo en esto:
+
+EMPRESA: {contexto['nombre']} ({contexto['ticker']})
+Sector: {contexto['sector']}
+
+TEXTO MD&A:
+\"\"\"{(contexto['texto_mda'] or '')[:4000]}\"\"\"
+
+No hables de resultados financieros ni de si es buena inversión, solo de qué hace la empresa."""
+
+    mensajes = [{"role": "user", "content": prompt}]
+    resumen, errores = None, []
+    for nombre, llamar in [("groq", chat_groq), ("gemini", chat_gemini)]:
+        try:
+            resumen = llamar(mensajes)
+            break
+        except Exception as e:
+            errores.append(f"{nombre}: {str(e)[:150]}")
+
+    if resumen is None:
+        cur.close()
+        return "(no se pudo generar -- " + " | ".join(errores) + ")"
+
+    cur.execute("update empresas set resumen_negocio = %s where id = %s", (resumen, empresa_id))
+    cur.close()
+    return resumen
 
 
 # ---------- componentes de la interfaz ----------
@@ -301,6 +357,84 @@ def vista_panorama():
                     f"<span class='veredicto-{r.veredicto}'>{r.veredicto}</span>",
                     unsafe_allow_html=True,
                 )
+
+
+def vista_candidatas():
+    st.subheader("🏆 Candidatas por interés")
+    st.caption("Ordenadas por veredicto y luego por score total.")
+
+    # score_total y veredicto viven en filas DISTINTAS: scorer_capa2.py
+    # crea la fila con el score real (veredicto is null), y el
+    # Detective/Auditor insertan una fila aparte con el veredicto pero
+    # score_total a 0 por defecto -- mismo patrón que ya separa
+    # vista_panorama() en dos queries.
+    candidatas = query_df("""
+        select e.id, e.ticker, e.nombre, e.sector,
+               ultimo.veredicto,
+               capa2.score_total
+        from empresas e
+        join lateral (
+            select veredicto from auditorias
+            where empresa_id = e.id and veredicto is not null
+            order by fecha_analisis desc limit 1
+        ) ultimo on true
+        join lateral (
+            select score_total from auditorias
+            where empresa_id = e.id and veredicto is null
+            order by fecha_analisis desc limit 1
+        ) capa2 on true
+    """)
+    if candidatas.empty:
+        st.info("Todavía no hay veredictos.")
+        return
+
+    orden = {"MUY_INTERESANTE": 0, "INTERESANTE": 1, "NADA_INTERESANTE": 2, "ALUCINACION": 3}
+    candidatas["orden"] = candidatas["veredicto"].map(orden)
+    candidatas = candidatas.sort_values(["orden", "score_total"], ascending=[True, False])
+
+    conn = conectar_db()
+    for r in candidatas.itertuples():
+        with st.container(border=True):
+            st.markdown(
+                f"**{r.ticker}** — {r.nombre} · {r.sector or '—'} · score {r.score_total}/40 · "
+                f"<span class='veredicto-{r.veredicto}'>{r.veredicto}</span>",
+                unsafe_allow_html=True,
+            )
+            with st.expander("Resumen, puntos fuertes y débiles"):
+                # La generación va detrás de un botón a propósito: el
+                # código de un expander se ejecuta en CADA rerun aunque
+                # esté cerrado (Streamlit solo oculta el render, no la
+                # ejecución) -- llamar aquí directo a Gemini disparaba
+                # una petición por cada candidata sin resumen, todas
+                # seguidas, y saturaba la cuota (429 en cascada, visto
+                # en real). La comprobación de caché sí es solo una
+                # lectura de BD, esa es segura de ejecutar siempre.
+                cur = conn.cursor()
+                cur.execute("select resumen_negocio from empresas where id = %s", (r.id,))
+                resumen_cacheado = cur.fetchone()[0]
+                cur.close()
+
+                if resumen_cacheado:
+                    st.write(resumen_cacheado)
+                elif st.button("Generar resumen del negocio", key=f"resumen_{r.id}"):
+                    contexto = obtener_contexto_empresa(conn, r.ticker)
+                    with st.spinner("Generando..."):
+                        st.write(obtener_resumen_negocio(conn, r.id, contexto))
+                else:
+                    st.caption("Pulsa el botón para generarlo (una sola vez, queda guardado).")
+
+                ultimo = query_df(
+                    """select respuesta_llm from auditorias
+                       where empresa_id = %s and respuesta_llm ? 'puntos_fuertes'
+                       order by fecha_analisis desc limit 1""",
+                    (r.id,)
+                )
+                if not ultimo.empty:
+                    resp = ultimo.iloc[0]["respuesta_llm"]
+                    if resp.get("puntos_fuertes"):
+                        st.write("**Puntos fuertes:** " + "; ".join(resp["puntos_fuertes"]))
+                    if resp.get("puntos_debiles"):
+                        st.write("**Puntos débiles:** " + "; ".join(resp["puntos_debiles"]))
 
 
 def vista_empresa(ticker: str):
@@ -472,7 +606,7 @@ def main():
     with st.sidebar:
         st.markdown("### Navegación")
         vista = st.radio(
-            "Vista", ["📊 Panorama", "🔎 Empresa", "💬 Chat"],
+            "Vista", ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat"],
             label_visibility="collapsed",
         )
 
@@ -514,6 +648,8 @@ def main():
 
     if vista == "📊 Panorama":
         vista_panorama()
+    elif vista == "🏆 Candidatas":
+        vista_candidatas()
     elif vista == "🔎 Empresa" and ticker:
         vista_empresa(ticker)
     elif vista == "💬 Chat" and ticker:
