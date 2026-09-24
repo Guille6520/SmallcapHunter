@@ -5,8 +5,10 @@ La SEC distribuye los datos en ZIPs trimestrales. Cada ZIP pesa 8-15 MB
 y contiene 8 archivos TSV. Descargo el ZIP en memoria, extraigo solo los
 3 que necesito y descarto el resto — sin guardar nada en disco.
 
-URL base de los ZIPs:
+URL base de los ZIPs (ver SEC_BASE_URLS: la SEC movió el de 2026 Q2 a
+otra ruta, así que se prueban las dos):
   https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets/
+  https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets/
   Formato: {anio}q{trimestre}_form345.zip  (ej: 2023q1_form345.zip)
 
 Nota: la primera versión tenía además una rama para cargar un CSV de
@@ -72,8 +74,15 @@ SEC_HEADERS = {
     "Accept-Encoding": "gzip, deflate",
 }
 
-# URL correcta de los ZIPs de la SEC (verificada en julio 2026)
-SEC_BASE_URL = "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets"
+# La SEC movió el ZIP de 2026 Q2 a otra ruta (datastandardsinnovation en
+# vez de structureddata) sin redirección: la URL vieja da 404. Pruebo las
+# dos en orden y solo doy el trimestre por inexistente si fallan las dos.
+# (Ruta nueva leída de la página de datasets de la SEC en sept 2026; la
+# confirma el propio loader al bajar el Q2.)
+SEC_BASE_URLS = (
+    "https://www.sec.gov/files/structureddata/data/insider-transactions-data-sets",
+    "https://www.sec.gov/files/datastandardsinnovation/data/insider-transactions-data-sets",
+)
 
 # Columnas que me interesan de los TSV de la SEC.
 # Nombres exactos según FORM_345_metadata.json de la SEC.
@@ -131,6 +140,9 @@ def conectar_db():
         raise
 
 
+_NO_ENCONTRADO = object()
+
+
 def descargar_zip_sec(anio, trimestre):
     """
     Descarga el ZIP de un trimestre de la SEC y extrae en memoria
@@ -138,8 +150,22 @@ def descargar_zip_sec(anio, trimestre):
 
     El ZIP pesa entre 8 y 15 MB — pequeño y rápido.
     El nombre del ZIP sigue el patrón: 2023q1_form345.zip
+
+    Pruebo cada ruta de SEC_BASE_URLS en orden y paso a la siguiente
+    solo si la SEC responde 404; cualquier otro fallo (red, ZIP roto)
+    no es un problema de ruta y devuelve None sin probar más.
     """
-    url = f"{SEC_BASE_URL}/{anio}q{trimestre}_form345.zip"
+    for base in SEC_BASE_URLS:
+        url = f"{base}/{anio}q{trimestre}_form345.zip"
+        resultado = _descargar_zip_url(url, anio, trimestre)
+        if resultado is not _NO_ENCONTRADO:
+            return resultado
+    return None
+
+
+def _descargar_zip_url(url, anio, trimestre):
+    """Una URL concreta: los DataFrames si va bien, None si falla por
+    otra causa, o _NO_ENCONTRADO si la SEC responde 404."""
     log.info(f"Descargando {anio} Q{trimestre} desde la SEC ({url})")
 
     for intento in range(3):
@@ -148,7 +174,7 @@ def descargar_zip_sec(anio, trimestre):
 
             if r.status_code == 404:
                 log.warning(f"ZIP no encontrado: {url}")
-                return None
+                return _NO_ENCONTRADO
 
             if r.status_code == 429:
                 espera = 60 * (intento + 1)

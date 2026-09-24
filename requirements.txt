@@ -11,7 +11,7 @@ psycopg2-binary==2.9.9      # cliente PostgreSQL
 # Descarga y procesamiento de datos
 requests==2.32.3            # llamadas HTTP a la SEC
 pandas==2.2.3               # TSVs del Form 4
-yfinance==0.2.51             # datos de mercado (pinned: sin pin rompía builds de un dia para otro)
+yfinance==1.7.0             # datos de mercado. La 0.2.51 dejó de funcionar (Yahoo devuelve 429 al cliente viejo); las 1.x usan curl_cffi para imitar un navegador
 beautifulsoup4==4.12.3      # extracción del MD&A de los 10-Q en HTML
 
 # LLMs (SDKs directos, sin framework intermedio para Groq/Gemini/Claude —
