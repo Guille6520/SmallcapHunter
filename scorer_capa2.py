@@ -38,7 +38,7 @@ from typing import Optional
 
 import psycopg2
 
-from filtro_capa1 import detectar_cluster_buying
+from filtro_capa1 import detectar_cluster_buying, dias_recencia_cluster
 from dotenv import load_dotenv
 
 # Cargo el .env de la carpeta si existe — así las claves no dependen de
@@ -120,9 +120,13 @@ def score_conviccion(conn, empresa_id: int, config: dict) -> int:
             select fecha_transaccion, nombre_insider, importe_total
             from insider_transactions
             where empresa_id = %s and tipo_transaccion = 'P'
+              and fecha_transaccion >= current_date - %s
             order by fecha_transaccion
             """,
-            (empresa_id,)
+            # Mismo horizonte de recencia que la Capa 1: si no, este
+            # detectar_cluster_buying podría localizar un cluster viejo
+            # distinto del que validó ella.
+            (empresa_id, dias_recencia_cluster(config))
         )
         filas = cur.fetchall()
     finally:

@@ -202,8 +202,28 @@ def hay_csuite_en_ventana(transacciones_con_cargo: list, fecha_deteccion,
     return False
 
 
-def obtener_transacciones_compra(conn, empresa_id: int) -> list:
-    """Traigo todas las compras P de la empresa, con nombre y cargo del insider."""
+def dias_recencia_cluster(config: dict) -> int:
+    """
+    Antigüedad máxima de las compras de insiders que cuentan para el
+    cluster. Sin esto, un cluster de 2019 valía igual que uno de hace un
+    mes: la Capa 1 traía todas las compras de la historia y bastaba con
+    que existiera UNA ventana de 60 días con 3 insiders en cualquier año
+    (el 48% de las candidatas no tenía ninguna compra en más de un año).
+
+    Filtro las compras ANTES de detectar el cluster (en la consulta), no
+    la fecha del cluster después: detectar_cluster_buying devuelve el
+    cluster más antiguo que encuentra, así que filtrar por su fecha
+    descartaría empresas con un cluster viejo y otro reciente. La
+    función en sí no se toca porque la usan también los scripts de
+    validación y backtest, que buscan clusters de cualquier año a
+    propósito. La Capa 2 usa este mismo horizonte para puntuar la misma
+    ventana que validó esta capa.
+    """
+    return int(config.get("meses_recencia_cluster", 12)) * 30
+
+
+def obtener_transacciones_compra(conn, empresa_id: int, dias_recencia: int) -> list:
+    """Compras P de la empresa dentro del horizonte de recencia, con nombre y cargo del insider."""
     cur = conn.cursor()
     try:
         cur.execute(
@@ -211,9 +231,10 @@ def obtener_transacciones_compra(conn, empresa_id: int) -> list:
             select fecha_transaccion, nombre_insider, cargo
             from insider_transactions
             where empresa_id = %s and tipo_transaccion = 'P'
+              and fecha_transaccion >= current_date - %s
             order by fecha_transaccion
             """,
-            (empresa_id,)
+            (empresa_id, dias_recencia)
         )
         return cur.fetchall()
     finally:
@@ -240,14 +261,16 @@ def evaluar_empresa(conn, empresa_id: int, market_cap, bolsa: str, config: dict)
     if not bolsa_es_valida(bolsa):
         return False, f"Bolsa no válida: {bolsa}"
 
-    transacciones = obtener_transacciones_compra(conn, empresa_id)
+    dias_recencia = dias_recencia_cluster(config)
+    transacciones = obtener_transacciones_compra(conn, empresa_id, dias_recencia)
     fechas_nombres = [(f, n) for f, n, c in transacciones]
 
     cluster = detectar_cluster_buying(fechas_nombres, dias_ventana, min_insiders)
     if not cluster["cumple"]:
         return False, (
             f"Sin cluster buying suficiente — máximo {cluster['insiders_max']} "
-            f"insiders distintos en {dias_ventana} días (necesito {min_insiders})"
+            f"insiders distintos en {dias_ventana} días, contando solo los "
+            f"últimos {dias_recencia // 30} meses (necesito {min_insiders})"
         )
 
     fechas_cargos = [(f, c) for f, n, c in transacciones]
@@ -269,6 +292,16 @@ def actualizar_estado(conn, empresa_id: int, paso: bool, motivo: str):
             cur.execute(
                 "update empresas set estado = 'descartada', razon_descarte = %s where id = %s",
                 (motivo, empresa_id)
+            )
+            # Si antes pasó y ahora no (p. ej. su cluster ya no es
+            # reciente), su fila de scoring vieja seguiría contando como
+            # candidata para el orquestador y el dashboard, porque
+            # scorer_capa2 solo reescribe las de las empresas que puntúa.
+            # Borro solo filas de scoring (veredicto null), nunca análisis
+            # de LLM -- la misma distinción que ya usa scorer_capa2.
+            cur.execute(
+                "delete from auditorias where empresa_id = %s and veredicto is null",
+                (empresa_id,)
             )
         conn.commit()
     except Exception as e:

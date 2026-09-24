@@ -359,82 +359,246 @@ def vista_panorama():
                 )
 
 
+# Un análisis de más de esto se marca como posiblemente desfasado: los
+# puntos fuertes/débiles describen la empresa el día que se analizó, no hoy.
+DIAS_ANALISIS_ANTIGUO = 90
+
+ETIQUETA_VEREDICTO = {
+    "MUY_INTERESANTE": "🟢 MUY_INTERESANTE",
+    "INTERESANTE": "🟠 INTERESANTE",
+    "NADA_INTERESANTE": "🔴 NADA_INTERESANTE",
+    "ALUCINACION": "🟣 ALUCINACION",
+}
+# Las que aún no han pasado por los agentes van entre INTERESANTE y
+# NADA_INTERESANTE: un score alto sin juzgar todavía merece más atención
+# que algo que un agente ya descartó, pero no que algo ya confirmado.
+ORDEN_VEREDICTO = {
+    "MUY_INTERESANTE": 0, "INTERESANTE": 1, "SIN_ANALIZAR": 2,
+    "NADA_INTERESANTE": 3, "ALUCINACION": 4,
+}
+
+
+def _dias_desde(fecha):
+    """Días transcurridos desde una fecha o timestamp; None si no hay fecha."""
+    if fecha is None or pd.isna(fecha):
+        return None
+    return (pd.Timestamp.now().normalize() - pd.Timestamp(fecha).normalize()).days
+
+
+def _hace(fecha) -> str:
+    dias = _dias_desde(fecha)
+    if dias is None:
+        return "—"
+    return f"hace {dias} d" if dias < 365 else f"hace {dias / 365:.1f} años"
+
+
+def _texto_analisis(fecha) -> str:
+    dias = _dias_desde(fecha)
+    if dias is None:
+        return "—"
+    aviso = "⚠️ " if dias > DIAS_ANALISIS_ANTIGUO else ""
+    return f"{aviso}{fecha:%Y-%m-%d} ({_hace(fecha)})"
+
+
+def _leer_candidatas(corte_llm: int) -> pd.DataFrame:
+    """Todas las empresas con veredicto, más las que tienen score >=
+    corte_llm aunque ningún agente las haya analizado todavía."""
+    return query_df(
+        """
+        with ids as (
+            select empresa_id from auditorias where veredicto is not null
+            union
+            select empresa_id from auditorias
+            where veredicto is null and score_total >= %s
+        )
+        select e.id, e.ticker, e.nombre, e.sector,
+               ultimo.veredicto, ultimo.fecha_analisis,
+               capa2.score_total,
+               ins.ultima_compra
+        from ids
+        join empresas e on e.id = ids.empresa_id
+        left join lateral (
+            select veredicto, fecha_analisis from auditorias
+            where empresa_id = e.id and veredicto is not null
+            order by fecha_analisis desc limit 1
+        ) ultimo on true
+        left join lateral (
+            select score_total from auditorias
+            where empresa_id = e.id and veredicto is null
+            order by fecha_analisis desc limit 1
+        ) capa2 on true
+        left join lateral (
+            select max(fecha_transaccion) as ultima_compra
+            from insider_transactions
+            where empresa_id = e.id and tipo_transaccion = 'P'
+        ) ins on true
+        """,
+        (corte_llm,),
+    )
+
+
+def _tabla_candidatas(df: pd.DataFrame, con_score: bool) -> pd.DataFrame:
+    tabla = pd.DataFrame({
+        "Ticker": df["ticker"],
+        "Empresa": df["nombre"],
+        "Veredicto": df["veredicto"].map(ETIQUETA_VEREDICTO).fillna("⚪ sin analizar"),
+        "Último análisis": df["fecha_analisis"].map(_texto_analisis),
+        "Última compra de insiders": df["ultima_compra"].map(
+            lambda f: "—" if pd.isna(f) else f"{f:%Y-%m-%d} ({_hace(f)})"
+        ),
+    })
+    if con_score:
+        tabla.insert(3, "Score /40", df["score_total"])
+    return tabla
+
+
+def _detalle_candidata(conn, r, con_score: bool):
+    empresa_id = int(r["id"])
+    ticker = r["ticker"]
+    veredicto = r["veredicto"] if isinstance(r["veredicto"], str) else None
+
+    with st.container(border=True):
+        st.markdown(f"#### {ticker} — {r['nombre']}")
+        score = f"score {int(r['score_total'])}/40" if con_score else "sin score vigente"
+        etiqueta = (
+            f"<span class='veredicto-{veredicto}'>{veredicto}</span>"
+            if veredicto else "sin analizar"
+        )
+        st.markdown(
+            f"{r['sector'] or '—'} · {score} · {etiqueta} · última compra de "
+            f"insiders: {_hace(r['ultima_compra'])}",
+            unsafe_allow_html=True,
+        )
+
+        # La generación va detrás de un botón a propósito: Streamlit
+        # ejecuta el código de la página en CADA rerun, y llamar aquí
+        # directo a un LLM disparaba una petición por empresa sin resumen,
+        # todas seguidas, y saturaba la cuota (429 en cascada, visto en
+        # real). La comprobación de caché sí es solo una lectura de BD.
+        st.markdown("**A qué se dedica**")
+        cur = conn.cursor()
+        cur.execute("select resumen_negocio from empresas where id = %s", (empresa_id,))
+        resumen_cacheado = cur.fetchone()[0]
+        cur.close()
+
+        if resumen_cacheado:
+            st.write(resumen_cacheado)
+        elif st.button("Generar resumen del negocio", key=f"resumen_{empresa_id}"):
+            contexto = obtener_contexto_empresa(conn, ticker)
+            with st.spinner("Generando..."):
+                st.write(obtener_resumen_negocio(conn, empresa_id, contexto))
+        else:
+            st.caption("Pulsa el botón para generarlo (una sola vez, queda guardado).")
+
+        # Un análisis por modelo (los dos Detectives son votos ciegos y
+        # pueden discrepar, y cada uno tiene su fecha), el más reciente
+        # de cada uno.
+        analisis = query_df(
+            """select modelo_llm, fecha_analisis, respuesta_llm
+               from auditorias
+               where empresa_id = %s and respuesta_llm ? 'puntos_fuertes'
+               order by fecha_analisis desc""",
+            (empresa_id,)
+        )
+        if analisis.empty:
+            st.info("Todavía sin análisis de los agentes.")
+            return
+
+        for a in analisis.drop_duplicates("modelo_llm").itertuples():
+            resp = a.respuesta_llm if isinstance(a.respuesta_llm, dict) else json.loads(a.respuesta_llm or "{}")
+            st.markdown(
+                f"**Detective {a.modelo_llm}** · análisis del "
+                f"{a.fecha_analisis:%Y-%m-%d} ({_hace(a.fecha_analisis)})"
+            )
+            dias = _dias_desde(a.fecha_analisis)
+            if dias is not None and dias > DIAS_ANALISIS_ANTIGUO:
+                st.warning(
+                    f"Este análisis tiene {dias} días: puede no reflejar la "
+                    "situación actual de la empresa."
+                )
+            for titulo, clave_json in (
+                ("Puntos fuertes", "puntos_fuertes"),
+                ("Puntos débiles", "puntos_debiles"),
+            ):
+                puntos = resp.get(clave_json) or []
+                if puntos:
+                    st.markdown(f"**{titulo}**\n" + "\n".join(f"- {p}" for p in puntos))
+
+
+def _bloque_candidatas(conn, df: pd.DataFrame, clave: str, con_score: bool):
+    """Tabla con selección de una fila y, debajo, el detalle de esa empresa."""
+    df = df.reset_index(drop=True)
+    evento = st.dataframe(
+        _tabla_candidatas(df, con_score),
+        hide_index=True,
+        use_container_width=True,
+        on_select="rerun",
+        selection_mode="single-row",
+        # len(df) en la clave: si cambia la lista (p. ej. al marcar el
+        # checkbox) la selección anterior ya no apunta a la misma fila.
+        key=f"tabla_{clave}_{len(df)}",
+        column_config=(
+            {"Score /40": st.column_config.ProgressColumn(
+                "Score /40", min_value=0, max_value=40, format="%d"
+            )} if con_score else None
+        ),
+    )
+    filas = evento.selection.rows
+    if filas and filas[0] < len(df):
+        _detalle_candidata(conn, df.iloc[filas[0]], con_score)
+    else:
+        st.caption("Selecciona una fila para ver el resumen, los puntos fuertes y los débiles.")
+
+
 def vista_candidatas():
     st.subheader("🏆 Candidatas por interés")
-    st.caption("Ordenadas por veredicto y luego por score total.")
+    corte = leer_corte()
+    incluir_bajo_corte = st.checkbox(
+        f"Incluir también las que no llegan al corte de LLM (score < {corte}/40)"
+    )
+    st.caption(
+        "Ordenadas por veredicto y luego por score. Las que aún no han pasado "
+        "por los agentes salen como «sin analizar». Selecciona una fila para "
+        "ver el detalle."
+    )
 
     # score_total y veredicto viven en filas DISTINTAS: scorer_capa2.py
     # crea la fila con el score real (veredicto is null), y el
     # Detective/Auditor insertan una fila aparte con el veredicto pero
     # score_total a 0 por defecto -- mismo patrón que ya separa
     # vista_panorama() en dos queries.
-    candidatas = query_df("""
-        select e.id, e.ticker, e.nombre, e.sector,
-               ultimo.veredicto,
-               capa2.score_total
-        from empresas e
-        join lateral (
-            select veredicto from auditorias
-            where empresa_id = e.id and veredicto is not null
-            order by fecha_analisis desc limit 1
-        ) ultimo on true
-        join lateral (
-            select score_total from auditorias
-            where empresa_id = e.id and veredicto is null
-            order by fecha_analisis desc limit 1
-        ) capa2 on true
-    """)
+    #
+    # Una empresa con veredicto pero sin fila de score es una que Capa 1
+    # descartó después (su cluster de insiders ya no entra en el horizonte
+    # de recencia): pierde su score a propósito, para que el orquestador
+    # no siga gastando LLM en ella. Va a un bloque aparte, abajo -- si se
+    # mezclara, su veredicto viejo la pondría la primera.
+    candidatas = _leer_candidatas(0 if incluir_bajo_corte else corte)
     if candidatas.empty:
-        st.info("Todavía no hay veredictos.")
+        st.info("Todavía no hay candidatas ni veredictos.")
         return
 
-    orden = {"MUY_INTERESANTE": 0, "INTERESANTE": 1, "NADA_INTERESANTE": 2, "ALUCINACION": 3}
-    candidatas["orden"] = candidatas["veredicto"].map(orden)
-    candidatas = candidatas.sort_values(["orden", "score_total"], ascending=[True, False])
+    candidatas["orden"] = candidatas["veredicto"].fillna("SIN_ANALIZAR").map(ORDEN_VEREDICTO)
+    vigentes = candidatas[candidatas["score_total"].notna()].sort_values(
+        ["orden", "score_total"], ascending=[True, False]
+    )
+    antiguas = candidatas[candidatas["score_total"].isna()].sort_values(["orden", "ticker"])
 
     conn = conectar_db()
-    for r in candidatas.itertuples():
-        with st.container(border=True):
-            st.markdown(
-                f"**{r.ticker}** — {r.nombre} · {r.sector or '—'} · score {r.score_total}/40 · "
-                f"<span class='veredicto-{r.veredicto}'>{r.veredicto}</span>",
-                unsafe_allow_html=True,
-            )
-            with st.expander("Resumen, puntos fuertes y débiles"):
-                # La generación va detrás de un botón a propósito: el
-                # código de un expander se ejecuta en CADA rerun aunque
-                # esté cerrado (Streamlit solo oculta el render, no la
-                # ejecución) -- llamar aquí directo a Gemini disparaba
-                # una petición por cada candidata sin resumen, todas
-                # seguidas, y saturaba la cuota (429 en cascada, visto
-                # en real). La comprobación de caché sí es solo una
-                # lectura de BD, esa es segura de ejecutar siempre.
-                cur = conn.cursor()
-                cur.execute("select resumen_negocio from empresas where id = %s", (r.id,))
-                resumen_cacheado = cur.fetchone()[0]
-                cur.close()
+    if vigentes.empty:
+        st.info("Ninguna empresa pasa ahora mismo la Capa 1 con score suficiente.")
+    else:
+        _bloque_candidatas(conn, vigentes, "vigentes", con_score=True)
 
-                if resumen_cacheado:
-                    st.write(resumen_cacheado)
-                elif st.button("Generar resumen del negocio", key=f"resumen_{r.id}"):
-                    contexto = obtener_contexto_empresa(conn, r.ticker)
-                    with st.spinner("Generando..."):
-                        st.write(obtener_resumen_negocio(conn, r.id, contexto))
-                else:
-                    st.caption("Pulsa el botón para generarlo (una sola vez, queda guardado).")
-
-                ultimo = query_df(
-                    """select respuesta_llm from auditorias
-                       where empresa_id = %s and respuesta_llm ? 'puntos_fuertes'
-                       order by fecha_analisis desc limit 1""",
-                    (r.id,)
-                )
-                if not ultimo.empty:
-                    resp = ultimo.iloc[0]["respuesta_llm"]
-                    if resp.get("puntos_fuertes"):
-                        st.write("**Puntos fuertes:** " + "; ".join(resp["puntos_fuertes"]))
-                    if resp.get("puntos_debiles"):
-                        st.write("**Puntos débiles:** " + "; ".join(resp["puntos_debiles"]))
+    if not antiguas.empty:
+        st.divider()
+        st.subheader("Señal de insiders antigua (fuera de Capa 1)")
+        st.caption(
+            "Ya tienen veredicto, pero su cluster de insiders no entra en el "
+            "horizonte de recencia de Capa 1 (12 meses por defecto), así que "
+            "el pipeline ya no las trata como candidatas. Solo para consulta."
+        )
+        _bloque_candidatas(conn, antiguas, "antiguas", con_score=False)
 
 
 def vista_empresa(ticker: str):
