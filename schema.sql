@@ -520,6 +520,8 @@ insert into configuracion (clave, valor, notas) values
     ('market_cap_max', '2000000000', 'Máximo 2B — por encima ya lo ve demasiada gente'),
     ('min_insiders_cluster', '3',    'Mínimo 3 insiders distintos en la ventana de tiempo'),
     ('dias_ventana_cluster', '60',   'Ventana para contar el cluster de compras'),
+    ('meses_recencia_cluster', '12',
+     'Antigüedad máxima (meses) de las compras de insiders que cuentan para el cluster. Sin límite, un cluster de 2019 valía igual que uno de hace un mes'),
     ('scheduler_horas', '48',        'Cada cuántas horas corre el scheduler de Form 4'),
     ('meses_sin_datos_baja', '9',
      'Si no hay trimestre nuevo en este tiempo, marco la empresa como inactiva'),
