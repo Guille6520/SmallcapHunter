@@ -80,6 +80,12 @@ DB_CONFIG = {
 # eso es para el modo --completo, no para el goteo de cada 48h.
 LIMITE_MERCADO_PASADA_NORMAL = 800
 
+# Fallos seguidos de un mismo modelo antes de retirarlo del resto de la
+# pasada. Un fallo suelto (un 503 de Gemini, un JSON mal formado de
+# Nemotron) no es cuota agotada: en la pasada del 24-sep dos fallos
+# sueltos sacaron a los dos modelos y 6 de 10 empresas quedaron sin tocar.
+FALLOS_SEGUIDOS_PARA_RETIRAR = 3
+
 
 def conectar_db():
     conn = psycopg2.connect(**DB_CONFIG)
@@ -287,12 +293,16 @@ def fase_agentes(config: dict) -> dict:
     )
 
     # Cuando un modelo agota su CUOTA DIARIA (Gemini free: 20 llamadas/
-    # día; Groq: 100k tokens/día), reintentar con el siguiente ticker
-    # solo produce el mismo 429. En cuanto un modelo falla, lo retiro
-    # del resto de la pasada; si caen los dos, corto la fase entera.
-    # Lo que quede pendiente lo recogerá la siguiente pasada — para eso
-    # está la condición de disparo por modelo.
+    # día), reintentar con el siguiente ticker solo produce el mismo 429,
+    # así que lo retiro del resto de la pasada -- pero solo tras
+    # FALLOS_SEGUIDOS_PARA_RETIRAR fallos consecutivos de ese modelo (un
+    # éxito reinicia la cuenta). Retirarlo al primer fallo, asumiendo cuota,
+    # sacaba a un modelo entero de la pasada por un 503 suelto o un JSON
+    # roto. Si caen los dos, corto la fase entera. Lo que quede pendiente
+    # lo recogerá la siguiente pasada — para eso está la condición de
+    # disparo por modelo.
     modelos_caidos = set()
+    fallos_seguidos = {}
     analizadas, fallos = 0, 0
 
     for empresa_id, ticker, score, modelos_pendientes in pendientes:
@@ -300,7 +310,7 @@ def fase_agentes(config: dict) -> dict:
         if not modelos_a_ejecutar:
             log.warning(
                 f"{ticker}: sus modelos pendientes ({modelos_pendientes}) están "
-                f"sin cuota — lo dejo para la siguiente pasada"
+                f"retirados de esta pasada — lo dejo para la siguiente"
             )
             continue
 
@@ -311,19 +321,29 @@ def fase_agentes(config: dict) -> dict:
         # Antes esto eran 2-3 subprocesos con una pausa fija entre cada
         # uno; ahora es un subproceso que hace las tres cosas y yo solo
         # pauso una vez al terminar. La lógica de qué modelo se retira
-        # de la pasada por cuota agotada sigue viviendo aquí.
+        # de la pasada por fallos seguidos sigue viviendo aquí.
         exitos = ejecutar_grafo_paso(ticker, modelos_a_ejecutar)
         algun_exito = False
 
         for modelo in modelos_a_ejecutar:
             if exitos.get(modelo):
                 algun_exito = True
+                fallos_seguidos[modelo] = 0
             else:
-                # Asumo cuota agotada. Es la causa abrumadoramente más
-                # probable de un fallo aquí, y equivocarme solo cuesta
-                # posponer ese modelo a la siguiente pasada.
-                modelos_caidos.add(modelo)
-                log.warning(f"Retiro a {modelo} del resto de la pasada (posible cuota diaria agotada)")
+                fallos_seguidos[modelo] = fallos_seguidos.get(modelo, 0) + 1
+                if fallos_seguidos[modelo] >= FALLOS_SEGUIDOS_PARA_RETIRAR:
+                    modelos_caidos.add(modelo)
+                    log.warning(
+                        f"Retiro a {modelo} del resto de la pasada: "
+                        f"{fallos_seguidos[modelo]} fallos seguidos "
+                        "(probable cuota agotada o caída del proveedor)"
+                    )
+                else:
+                    log.warning(
+                        f"{modelo} falló en {ticker} "
+                        f"({fallos_seguidos[modelo]}/{FALLOS_SEGUIDOS_PARA_RETIRAR} "
+                        "seguidos): lo mantengo en la pasada"
+                    )
 
         time.sleep(config["pausa_llm"])
 
@@ -334,8 +354,8 @@ def fase_agentes(config: dict) -> dict:
 
         if len(modelos_caidos) == 2:
             log.warning(
-                "Los dos modelos están sin cuota — corto la fase de agentes. "
-                "La siguiente pasada retomará lo pendiente."
+                "Los dos modelos están retirados de esta pasada — corto la "
+                "fase de agentes. La siguiente pasada retomará lo pendiente."
             )
             break
 
