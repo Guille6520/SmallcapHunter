@@ -34,9 +34,8 @@ Requiere haber ejecutado antes:
   python ingesta_10q_historico.py --muestra 40   (trae los 10-Q de la época)
 
 Cómo usarlo:
-  python backtest_capa3.py --muestra 30
   python backtest_capa3.py --muestra 30 --modelo claude
-  python backtest_capa3.py --ticker BE --modelo groq   # un caso, para depurar
+  python backtest_capa3.py --ticker BE --modelo gemini   # un caso, para depurar
 """
 
 import os
@@ -52,7 +51,7 @@ from statistics import median
 import psycopg2
 import yfinance as yf
 
-from detective import llamar_modelo, modelo_secundario, parsear_json_llm
+from detective import llamar_modelo, parsear_json_llm
 from filtro_capa1 import es_cargo_csuite
 
 logging.basicConfig(
@@ -404,9 +403,8 @@ def main():
     )
     parser.add_argument("--muestra", type=int, default=30,
                         help="Cuántos casos históricos analizar")
-    parser.add_argument("--modelo", choices=["groq", "gemini", "claude"],
-                        default=None,
-                        help="Modelo a evaluar (por defecto, el secundario del .env)")
+    parser.add_argument("--modelo", choices=["claude", "gemini"], required=True,
+                        help="Modelo a evaluar")
     parser.add_argument("--ticker", type=str, default=None,
                         help="Un solo caso, para depurar")
     parser.add_argument("--pausa", type=int, default=5,
@@ -419,7 +417,7 @@ def main():
                              "el agente solo contra el sistema completo")
     args = parser.parse_args()
 
-    modelo = args.modelo or modelo_secundario()
+    modelo = args.modelo
     log.info(f"Modelo evaluado: {modelo}")
 
     casos = cargar_casos(args.archivo, args.ticker)

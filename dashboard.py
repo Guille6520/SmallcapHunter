@@ -116,30 +116,22 @@ def leer_corte(conn=None) -> int:
 
 # ---------- llamadas LLM para el chat (texto libre, sin JSON) ----------
 
-def chat_groq(mensajes: list) -> str:
-    # "groq" es el nombre del hueco, no el proveedor real -- ver
-    # detective.llamar_groq() para el porqué del cambio a OpenRouter.
-    # max_tokens + reasoning.effort bajo: mismo motivo que en
-    # detective.llamar_groq() -- sin esto, Nemotron puede gastarse el
-    # presupuesto entero razonando y devolver una respuesta vacía.
-    import requests
-    respuesta = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-        json={
-            "model": "nvidia/nemotron-3-super-120b-a12b:free",
-            "messages": mensajes,
-            "temperature": 0.4,
-            "max_tokens": 4000,
-            "reasoning": {"effort": "low"},
-        },
-        timeout=90,
+def chat_claude(mensajes: list) -> str:
+    # Ocupa el hueco que antes tenía "groq" (Nemotron vía OpenRouter,
+    # retirado en sep-2026: JSON roto y 429/503 frecuentes, medido con
+    # benchmark_modelos.py). La API de Anthropic lleva el system prompt
+    # aparte, no como un mensaje más de la lista -- lo separo aquí.
+    from anthropic import Anthropic
+    sistema = next((m["content"] for m in mensajes if m["role"] == "system"), None)
+    turnos = [m for m in mensajes if m["role"] != "system"]
+    cliente = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    respuesta = cliente.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=1500,
+        system=sistema,
+        messages=turnos,
     )
-    respuesta.raise_for_status()
-    data = respuesta.json()
-    if "choices" not in data:
-        raise RuntimeError(f"OpenRouter no devolvió 'choices': {data}")
-    return data["choices"][0]["message"]["content"]
+    return respuesta.content[0].text
 
 
 def chat_gemini(mensajes: list) -> str:
@@ -214,12 +206,13 @@ def obtener_resumen_negocio(conn, empresa_id: int, contexto: dict) -> str:
     el verificador de citas) -- se genera una vez y se cachea en
     empresas.resumen_negocio.
 
-    Pruebo Groq/OpenRouter primero y caigo a Gemini si falla -- al
-    revés de lo esperado a propósito: la cuota de Gemini (20/día) la
-    comparte el pipeline real (Detective/Auditor), y no quiero que
-    esta función, que es un extra cosmético, se la coma antes de que
-    la necesite un análisis de verdad. La cuota de OpenRouter (50/día,
-    por petición) es más barata de gastar aquí.
+    Pruebo Claude primero y caigo a Gemini si falla -- la cuota de
+    Gemini (20/día) la comparte el pipeline real (Detective/Auditor), y
+    no quiero que esta función, que es un extra cosmético, se la coma
+    antes de que la necesite un análisis de verdad. El resultado se
+    cachea para siempre en empresas.resumen_negocio (una sola llamada
+    por empresa en toda su vida), así que el céntimo de Claude aquí es
+    irrelevante frente a proteger la cuota diaria compartida.
     """
     cur = conn.cursor()
     cur.execute("select resumen_negocio from empresas where id = %s", (empresa_id,))
@@ -240,7 +233,7 @@ No hables de resultados financieros ni de si es buena inversión, solo de qué h
 
     mensajes = [{"role": "user", "content": prompt}]
     resumen, errores = None, []
-    for nombre, llamar in [("groq", chat_groq), ("gemini", chat_gemini)]:
+    for nombre, llamar in [("claude", chat_claude), ("gemini", chat_gemini)]:
         try:
             resumen = llamar(mensajes)
             break
@@ -683,7 +676,7 @@ def vista_empresa(ticker: str):
     if analisis.empty:
         st.info(
             f"Sin análisis LLM todavía. Lánzalo con: "
-            f"`python detective.py --ticker {ticker} --modelo groq`"
+            f"`python detective.py --ticker {ticker} --modelo claude`"
         )
     for r in analisis.itertuples():
         # psycopg2 devuelve JSONB como dict; si viniera como texto, lo parseo
@@ -752,8 +745,8 @@ def vista_chat(ticker: str, modelo: str):
         with st.chat_message("assistant"):
             with st.spinner(f"Pensando ({modelo})..."):
                 try:
-                    if modelo == "groq":
-                        respuesta = chat_groq(mensajes)
+                    if modelo == "claude":
+                        respuesta = chat_claude(mensajes)
                     else:
                         respuesta = chat_gemini(mensajes)
                 except Exception as e:
@@ -775,7 +768,7 @@ def main():
         )
 
         ticker = None
-        modelo = "groq"
+        modelo = "claude"
         if vista in ("🔎 Empresa", "💬 Chat"):
             # Ofrezco primero las candidatas con mejor score — que son
             # las que de verdad interesa mirar — pero cualquier empresa
@@ -797,7 +790,7 @@ def main():
             )
 
         if vista == "💬 Chat":
-            modelo = st.radio("Modelo del chat", ["groq", "gemini"], horizontal=True)
+            modelo = st.radio("Modelo del chat", ["claude", "gemini"], horizontal=True)
 
         st.divider()
         if st.button("Probar alerta de Telegram"):

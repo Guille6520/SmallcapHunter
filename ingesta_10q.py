@@ -20,7 +20,7 @@ Qué hago, paso a paso:
      cierre el trimestre que describe)
   5. Guardo el texto en la columna texto_mda. El embedding lo dejo para
      un paso posterior aparte (generar_embeddings_rag.py), porque
-     depende de qué proveedor de embeddings se decida usar (Groq/Gemini
+     depende de qué proveedor de embeddings se decida usar (Claude/Gemini
      no son OpenAI).
 
 No genero ningún embedding aquí a propósito — separar "conseguir el

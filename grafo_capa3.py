@@ -3,13 +3,13 @@ grafo_capa3.py — la Capa 3 (Detective + Auditor) orquestada como un
 grafo de LangGraph, en vez de tres comandos manuales encadenados a mano.
 
 Por qué un grafo y no solo tres funciones en secuencia: los dos
-Detectives (Groq y el modelo secundario) son votos ciegos e
-independientes por diseño — nunca se enseñan el uno al otro (ver
-detective.py). Eso es, literalmente, un fan-out: dos ramas que arrancan
-del mismo estado inicial y corren en paralelo. El Auditor solo tiene
-sentido cuando AMBAS ramas han terminado — un fan-in. LangGraph modela
-esto de forma explícita (nodos, aristas, estado compartido) en vez de
-dejarlo implícito en el orden de las líneas de un script.
+Detectives (Claude y Gemini) son votos ciegos e independientes por
+diseño — nunca se enseñan el uno al otro (ver detective.py). Eso es,
+literalmente, un fan-out: dos ramas que arrancan del mismo estado
+inicial y corren en paralelo. El Auditor solo tiene sentido cuando AMBAS
+ramas han terminado — un fan-in. LangGraph modela esto de forma
+explícita (nodos, aristas, estado compartido) en vez de dejarlo
+implícito en el orden de las líneas de un script.
 
 No reimplemento el análisis: cada nodo del grafo llama directamente a
 las funciones ya probadas de detective.py y auditor.py (ejecutar_detective,
@@ -25,7 +25,7 @@ Quién usa este módulo:
     POST /analizar/{ticker}.
   - Uso manual desde la terminal, para un ticker suelto:
       python grafo_capa3.py --ticker XXXX
-      python grafo_capa3.py --ticker XXXX --modelos groq
+      python grafo_capa3.py --ticker XXXX --modelos claude
 """
 
 import json
@@ -49,20 +49,20 @@ log = logging.getLogger(__name__)
 class EstadoCapa3(TypedDict):
     ticker: str
     conn: Any                      # conexión psycopg2 ya abierta, no serializada
-    modelos_a_ejecutar: list       # subconjunto de ["groq", modelo_secundario()]
-    resultado_groq: Optional[dict]
-    resultado_secundario: Optional[dict]
-    fallo_groq: bool
-    fallo_secundario: bool
+    modelos_a_ejecutar: list       # subconjunto de ["claude", "gemini"]
+    resultado_claude: Optional[dict]
+    resultado_gemini: Optional[dict]
+    fallo_claude: bool
+    fallo_gemini: bool
     auditorias_guardadas: list
 
 
 def _nodo_detective(modelo: str, campo_resultado: str, campo_fallo: str):
     """
     Fábrica de nodos: devuelvo una función de nodo cerrada sobre qué
-    modelo le toca correr y en qué claves del estado escribe. Groq y el
-    modelo secundario comparten la misma lógica de nodo — solo cambia
-    el modelo — así que no duplico el cuerpo por cada uno.
+    modelo le toca correr y en qué claves del estado escribe. Claude y
+    Gemini comparten la misma lógica de nodo — solo cambia el modelo —
+    así que no duplico el cuerpo por cada uno.
 
     Cada nodo abre su PROPIA conexión a la base de datos en vez de usar
     state["conn"]. LangGraph ejecuta los dos nodos Detective del mismo
@@ -108,7 +108,7 @@ def nodo_auditor(state: EstadoCapa3) -> dict:
     ejecutar_auditor tal cual, que ya sabe saltar lo que no tenga
     análisis previo guardado.
     """
-    if state.get("fallo_groq") and state.get("fallo_secundario"):
+    if state.get("fallo_claude") and state.get("fallo_gemini"):
         log.warning(f"{state['ticker']}: los dos Detectives fallaron — no hay nada que auditar")
         return {"auditorias_guardadas": []}
 
@@ -127,8 +127,8 @@ def nodo_auditor(state: EstadoCapa3) -> dict:
 def construir_grafo():
     """
     START
-      ├─> detective_groq        ─┐
-      └─> detective_secundario  ─┴─> auditor ─> END
+      ├─> detective_claude ─┐
+      └─> detective_gemini ─┴─> auditor ─> END
 
     Los dos nodos Detective arrancan del mismo superstep (fan-out desde
     START); auditor los espera a los dos antes de correr (fan-in). Cada
@@ -138,17 +138,14 @@ def construir_grafo():
     """
     grafo = StateGraph(EstadoCapa3)
 
-    grafo.add_node("detective_groq", _nodo_detective("groq", "resultado_groq", "fallo_groq"))
-    grafo.add_node(
-        "detective_secundario",
-        _nodo_detective(detective.modelo_secundario(), "resultado_secundario", "fallo_secundario"),
-    )
+    grafo.add_node("detective_claude", _nodo_detective("claude", "resultado_claude", "fallo_claude"))
+    grafo.add_node("detective_gemini", _nodo_detective("gemini", "resultado_gemini", "fallo_gemini"))
     grafo.add_node("auditor", nodo_auditor)
 
-    grafo.add_edge(START, "detective_groq")
-    grafo.add_edge(START, "detective_secundario")
-    grafo.add_edge("detective_groq", "auditor")
-    grafo.add_edge("detective_secundario", "auditor")
+    grafo.add_edge(START, "detective_claude")
+    grafo.add_edge(START, "detective_gemini")
+    grafo.add_edge("detective_claude", "auditor")
+    grafo.add_edge("detective_gemini", "auditor")
     grafo.add_edge("auditor", END)
 
     return grafo.compile()
@@ -163,17 +160,17 @@ def ejecutar_grafo_capa3(conn, ticker: str, modelos_a_ejecutar: list = None) -> 
     como sin cuota, notificar, etc.) sin tener que abrir el grafo.
     """
     if modelos_a_ejecutar is None:
-        modelos_a_ejecutar = ["groq", detective.modelo_secundario()]
+        modelos_a_ejecutar = ["claude", "gemini"]
 
     app = construir_grafo()
     estado_inicial: EstadoCapa3 = {
         "ticker": ticker,
         "conn": conn,
         "modelos_a_ejecutar": modelos_a_ejecutar,
-        "resultado_groq": None,
-        "resultado_secundario": None,
-        "fallo_groq": False,
-        "fallo_secundario": False,
+        "resultado_claude": None,
+        "resultado_gemini": None,
+        "fallo_claude": False,
+        "fallo_gemini": False,
         "auditorias_guardadas": [],
     }
     return app.invoke(estado_inicial)
@@ -186,7 +183,7 @@ def main():
     parser.add_argument("--ticker", required=True)
     parser.add_argument(
         "--modelos", default=None,
-        help="Coma-separado: groq,gemini. Por defecto: groq + el modelo secundario configurado.",
+        help="Coma-separado: claude,gemini. Por defecto los dos.",
     )
     args = parser.parse_args()
 
@@ -200,10 +197,10 @@ def main():
 
     resumen = {
         "ticker": args.ticker,
-        "detective_groq_ok": estado_final.get("resultado_groq") is not None,
-        "detective_secundario_ok": estado_final.get("resultado_secundario") is not None,
-        "fallo_groq": estado_final.get("fallo_groq", False),
-        "fallo_secundario": estado_final.get("fallo_secundario", False),
+        "detective_claude_ok": estado_final.get("resultado_claude") is not None,
+        "detective_gemini_ok": estado_final.get("resultado_gemini") is not None,
+        "fallo_claude": estado_final.get("fallo_claude", False),
+        "fallo_gemini": estado_final.get("fallo_gemini", False),
         "auditorias_guardadas": len(estado_final.get("auditorias_guardadas") or []),
     }
     log.info(f"Resumen {args.ticker}: {resumen}")

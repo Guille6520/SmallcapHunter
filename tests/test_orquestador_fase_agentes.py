@@ -2,9 +2,11 @@
 tests/test_orquestador_fase_agentes.py — cuándo se retira un modelo del
 resto de una pasada. Antes se retiraba al primer fallo asumiendo cuota
 agotada, y en la pasada real del 24-sep un 503 suelto de Gemini y un JSON
-mal formado de Nemotron sacaron a los dos y 6 de 10 empresas quedaron sin
-tocar. La BD, el grafo y los sleeps van simulados: lo que pruebo es la
-política de retirada, no las llamadas a los LLM.
+mal formado de Nemotron (el modelo que ocupaba entonces el hueco hoy de
+Claude) sacaron a los dos y 6 de 10 empresas quedaron sin tocar. La BD, el
+grafo y los sleeps van simulados: lo que pruebo es la política de
+retirada, no las llamadas a los LLM -- "claude" abajo es un nombre de
+modelo cualquiera para el test, la lógica no depende de cuál sea.
 """
 
 import orquestador
@@ -13,8 +15,8 @@ CONFIG = {"corte": 25, "max_analisis": 10, "pausa_llm": 0}
 
 
 def _preparar(monkeypatch, resultados):
-    """resultados: lista de (ticker, exito_de_groq). Devuelve la lista de
-    tickers que llegaron a intentarse."""
+    """resultados: lista de (ticker, exito_del_modelo). Devuelve la lista
+    de tickers que llegaron a intentarse."""
     intentados = []
 
     class _Conn:
@@ -22,7 +24,7 @@ def _preparar(monkeypatch, resultados):
             pass
 
     pendientes = [
-        (i, ticker, 30 - i, ["groq"]) for i, (ticker, _) in enumerate(resultados)
+        (i, ticker, 30 - i, ["claude"]) for i, (ticker, _) in enumerate(resultados)
     ]
     exito_por_ticker = dict(resultados)
 

@@ -460,8 +460,10 @@ create table auditorias (
     -- nunca lo muestro en el dashboard.
     factor_anonimizacion decimal(6, 4),
 
-    -- Qué modelo hizo el análisis. Me sirve para comparar resultados
-    -- entre Groq/Llama y Gemini Flash y ver cuál acierta más.
+    -- Qué modelo hizo el análisis ('claude', 'gemini' -- y 'groq' en
+    -- filas históricas de antes de sep-2026, un modelo retirado que no
+    -- se vuelve a generar). Me sirve para comparar resultados entre
+    -- modelos y ver cuál acierta más.
     modelo_llm          varchar(50),
 
     -- Notas manuales que añado cuando reviso un caso y veo qué pasó
@@ -534,7 +536,7 @@ insert into configuracion (clave, valor, notas) values
     ('meses_shelf_activa', '12',
      'Un S-3/424B mas reciente que esto marca la shelf como activa'),
     ('max_analisis_por_pasada', '10',
-     'Tope de empresas que el orquestador analiza con LLM por pasada — protege las cuotas gratuitas de Groq/Gemini'),
+     'Tope de empresas que el orquestador analiza con LLM por pasada — protege la cuota gratuita diaria de Gemini y el gasto en Claude'),
     ('pausa_llm_segundos', '20',
      'Pausa entre analisis LLM del orquestador, por los limites por minuto de los tiers gratuitos');
 

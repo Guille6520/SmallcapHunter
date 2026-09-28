@@ -20,8 +20,9 @@ así que el Detective solo se lanza si:
   - nunca fue analizada, O hay datos nuevos desde el último análisis
     (un Form 4 de compra nuevo o un evento 8-K registrado después)
 
-Protección de cuotas (Groq y Gemini gratuitos tienen límites por minuto
-y por día): tope de empresas por pasada (max_analisis_por_pasada) y
+Protección de cuotas (Gemini gratuito tiene límite diario; Claude es de
+pago y no tiene tope de cuota, pero sí cuesta dinero por llamada): tope
+de empresas por pasada (max_analisis_por_pasada) y
 pausa entre análisis (pausa_llm_segundos), ambos en la tabla
 configuracion. Si una pasada deja empresas pendientes, caerán en la
 siguiente — el sistema es de 48h, no de tiempo real.
@@ -185,11 +186,10 @@ def ejecutar_grafo_paso(ticker: str, modelos: list) -> dict:
 
     log.info(f">>> grafo capa3 {ticker} terminado en {minutos:.1f} min")
     exitos = {}
-    if "groq" in modelos:
-        exitos["groq"] = resumen.get("detective_groq_ok", False)
-    modelos_secundarios = [m for m in modelos if m != "groq"]
-    if modelos_secundarios:
-        exitos[modelos_secundarios[0]] = resumen.get("detective_secundario_ok", False)
+    if "claude" in modelos:
+        exitos["claude"] = resumen.get("detective_claude_ok", False)
+    if "gemini" in modelos:
+        exitos["gemini"] = resumen.get("detective_gemini_ok", False)
     exitos["auditorias_guardadas"] = resumen.get("auditorias_guardadas", 0)
     return exitos
 
@@ -201,7 +201,7 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
 
     La granularidad es POR MODELO, no por empresa. La lección vino de
     una pasada real: Gemini agotó su cuota diaria a mitad, varias
-    empresas se quedaron solo con el voto de Groq, y la versión anterior
+    empresas se quedaron solo con el voto del otro modelo, y la versión anterior
     (que miraba "¿hay algún análisis?") las habría dado por completas
     para siempre. Ahora cada modelo tiene su propia condición: le toca
     si nunca analizó la empresa o si hay datos nuevos (Form 4 de compra
@@ -235,7 +235,7 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
             )
             select c.id, c.ticker, c.score, m.modelo
             from candidatas c
-            cross join (values ('groq'), (%s)) as m(modelo)
+            cross join (values ('claude'), ('gemini')) as m(modelo)
             left join detectives d
               on d.empresa_id = c.id and d.modelo_llm = m.modelo
             where d.ultima is null
@@ -248,7 +248,7 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
                             and it.fecha_registro > d.ultima)
             order by c.score desc, c.id
             """,
-            (corte, os.getenv("MODELO_SECUNDARIO", "gemini").strip().lower()),
+            (corte,),
         )
         filas = cur.fetchall()
     finally:

@@ -14,11 +14,10 @@ pandas==2.2.3               # TSVs del Form 4
 yfinance==1.7.0             # datos de mercado. La 0.2.51 dejó de funcionar (Yahoo devuelve 429 al cliente viejo); las 1.x usan curl_cffi para imitar un navegador
 beautifulsoup4==4.12.3      # extracción del MD&A de los 10-Q en HTML
 
-# LLMs (SDKs directos, sin framework intermedio para Groq/Gemini/Claude —
+# LLMs (SDKs directos, sin framework intermedio para Gemini/Claude —
 # solo la orquestación multi-agente de la Capa 3 usa un framework, ver abajo)
-groq                        # Llama 3.3 70B vía Groq
 google-genai                # Gemini Flash + gemini-embedding-001 (Capa 4/RAG). El SDK nuevo; google-generativeai está descontinuado
-anthropic                   # Claude Haiku como segundo voto opcional (MODELO_SECUNDARIO=claude)
+anthropic                   # Claude Haiku 4.5, uno de los dos votos ciegos fijos de la Capa 3
 
 # Orquestación multi-agente (Capa 3): grafo_capa3.py define el fan-out/
 # fan-in de Detective(s) + Auditor como StateGraph en vez de encadenar

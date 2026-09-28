@@ -15,7 +15,7 @@ Configuración (variables de entorno):
 
 Diseño deliberado: si Telegram no está configurado o falla, el
 notificador AVISA en el log pero nunca lanza excepción. Un análisis
-que costó llamadas a Groq/Gemini no se puede perder porque el aviso
+que costó llamadas a Claude/Gemini no se puede perder porque el aviso
 de cortesía no salió.
 """
 

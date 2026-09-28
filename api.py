@@ -38,7 +38,7 @@ from dotenv import load_dotenv
 
 from detective import (
     obtener_contexto_empresa, buscar_casos_similares_rag,
-    formatear_casos_similares_rag, modelo_secundario,
+    formatear_casos_similares_rag,
 )
 from grafo_capa3 import ejecutar_grafo_capa3
 
@@ -104,8 +104,8 @@ class CasoSimilar(BaseModel):
 
 class AnalisisResumen(BaseModel):
     ticker: str
-    detective_groq_ok: bool
-    detective_secundario_ok: bool
+    detective_claude_ok: bool
+    detective_gemini_ok: bool
     auditorias_guardadas: int
 
 
@@ -272,7 +272,7 @@ def analizar_candidata(ticker: str, modelos: Optional[str] = None):
     complejidad de una cola de tareas.
     """
     ticker = ticker.upper()
-    lista_modelos = modelos.split(",") if modelos else ["groq", modelo_secundario()]
+    lista_modelos = modelos.split(",") if modelos else ["claude", "gemini"]
 
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = False
@@ -292,7 +292,7 @@ def analizar_candidata(ticker: str, modelos: Optional[str] = None):
 
     return AnalisisResumen(
         ticker=ticker,
-        detective_groq_ok=estado_final.get("resultado_groq") is not None,
-        detective_secundario_ok=estado_final.get("resultado_secundario") is not None,
+        detective_claude_ok=estado_final.get("resultado_claude") is not None,
+        detective_gemini_ok=estado_final.get("resultado_gemini") is not None,
         auditorias_guardadas=len(estado_final.get("auditorias_guardadas") or []),
     )

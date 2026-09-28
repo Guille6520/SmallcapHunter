@@ -49,7 +49,7 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 
 - Python 3.11+
 - Docker Desktop
-- Cuenta gratuita en [OpenRouter](https://openrouter.ai) (Nemotron 3 Super 120B)
+- Cuenta de API en [Anthropic Console](https://console.anthropic.com) (Claude Haiku 4.5, de pago — céntimos por análisis)
 - Cuenta gratuita en [Google AI Studio](https://aistudio.google.com) (Gemini Flash)
 
 ---
@@ -101,7 +101,7 @@ DB_PORT=5434
 DB_NAME=smallcap_hunter
 DB_USER=postgres
 DB_PASSWORD=tu_password
-GROQ_API_KEY=...
+ANTHROPIC_API_KEY=...
 GEMINI_API_KEY=...
 SEC_CONTACT_EMAIL=tu_email_real@dominio.com   # la SEC lo exige en el User-Agent
 ```
@@ -169,16 +169,16 @@ python ingesta_13dg.py
 python grafo_capa3.py --ticker XXXX
 
 # Manual, modelo por modelo (para depurar uno solo):
-python detective.py --ticker XXXX --modelo groq
+python detective.py --ticker XXXX --modelo claude
 python detective.py --ticker XXXX --modelo gemini
-python auditor.py --ticker XXXX     # audita cruzado: Groq revisa a Gemini y viceversa
+python auditor.py --ticker XXXX     # audita cruzado: Claude revisa a Gemini y viceversa
 ```
 
 ### Modo autónomo (orquestador)
 
 Todo lo anterior encadenado, con los agentes analizando SOLO empresas
-con datos nuevos desde su último análisis, y tope + pausas para las
-cuotas gratuitas de Groq/Gemini:
+con datos nuevos desde su último análisis, y tope + pausas para la
+cuota gratuita diaria de Gemini y el gasto en Claude:
 
 ```bash
 python orquestador.py             # una pasada completa
@@ -326,7 +326,7 @@ Capa 1: filtros binarios (market cap 50M-2B, bolsa, cluster 3+ insiders/60d, C-s
 Capa 2: scoring numérico (precio 52W + convicción + aceleración + catalizador)
       ↓   ~112 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
           corte deliberadamente ancho: el embudo fino lo hacen los agentes)
-Capa 3: Detective → Auditor cruzado (Nemotron 120B vía OpenRouter y Gemini Flash, votos ciegos),
+Capa 3: Detective → Auditor cruzado (Claude Haiku 4.5 y Gemini Flash, votos ciegos),
         orquestados como un grafo de LangGraph (grafo_capa3.py: fan-out a
         los dos Detectives, fan-in al Auditor cruzado)
         con el MD&A del 10-Q + eventos 8-K + señales de mercado (short
@@ -358,7 +358,7 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   elegante a propósito, no un fallo silencioso).
 - **El grafo de LangGraph es secuencial dentro de cada nodo** — el
   fan-out/fan-in reemplaza la orquestación manual, pero no paraleliza
-  con hilos/async; para dos llamadas HTTP a APIs distintas (Groq/Gemini)
+  con hilos/async; para dos llamadas HTTP a APIs distintas (Claude/Gemini)
   esto es aceptable, no lo sería con una carga mucho mayor.
 - **La API es síncrona y sin cola de tareas** — `POST
   /candidatas/{ticker}/analizar` bloquea 10-30s (dos LLMs + verificador
@@ -396,13 +396,16 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   sistema que responde sin pasar por `verificar_citas()` (es
   conversación libre, no JSON estructurado); habría que forzar al chat
   a citar de forma parseable y reutilizar el mismo verificador
-- **Monitorización de calidad por modelo** — comparar la distribución de
-  veredictos (MUY_INTERESANTE/INTERESANTE/NADA_INTERESANTE/ALUCINACION)
-  entre modelos y en el tiempo, para detectar si un cambio de proveedor
-  (p.ej. Groq → OpenRouter) afecta a la calidad real de los análisis y
-  no solo a la disponibilidad — con un puñado de tickers no hay muestra
-  suficiente, hace falta más volumen de pasadas para que la comparación
-  sea fiable.
+- **Monitorización de calidad por modelo, continuada en el tiempo** — en
+  sep-2026 el modelo que ocupaba este hueco (Nemotron, gratuito vía
+  OpenRouter) empezó a devolver JSON roto y 429/503 con frecuencia
+  creciente; lo confirmé con un benchmark aparte
+  (`benchmark_modelos.py`, no versionado, mide % de JSON válido y % de
+  citas verificadas con el mismo prompt real) y sustituí ese hueco por
+  Claude Haiku 4.5. Sigue faltando automatizar esa comparación dentro
+  del propio proyecto (hoy es manual y puntual) para detectar el
+  próximo declive de calidad antes de que se note en producción, no
+  solo cuando ya está fallando.
   
 
 ---

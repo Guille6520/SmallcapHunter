@@ -15,16 +15,20 @@ mecánicamente (sin otro LLM) que esas citas existen de verdad en el
 texto_mda original. Si no existen, lo marco como alucinación — no me
 fío de que el LLM se autoevalúe.
 
-Groq y Gemini se llaman de forma completamente independiente (dos votos
+Claude y Gemini se llaman de forma completamente independiente (dos votos
 ciegos, nunca se enseñan el uno al otro) — así lo decidimos desde el
-diseño original del proyecto.
+diseño original del proyecto. El hueco que hoy ocupa Claude lo tuvo antes
+un modelo gratuito vía OpenRouter (Llama, luego GPT-OSS, luego Nemotron):
+fallaba una parte relevante de las veces con JSON roto o el proveedor
+saturado (visto y medido en las pasadas de sep-2026), así que lo
+sustituí por Claude Haiku 4.5, de pago pero barato y fiable.
 
 Al terminar cada análisis y guardarlo, mando un aviso por Telegram
 (notificador_telegram.py). Si Telegram no está configurado, el análisis
 funciona exactamente igual — el aviso es cortesía, no dependencia.
 
 Cómo usarlo:
-  python detective.py --ticker NUVB --modelo groq
+  python detective.py --ticker NUVB --modelo claude
   python detective.py --ticker NUVB --modelo gemini
 """
 
@@ -60,9 +64,9 @@ DB_CONFIG = {
     "password": os.getenv("DB_PASSWORD", ""),
 }
 
-# Trunco el MD&A a un tamaño razonable de tokens. La mayoría de modelos
-# gratuitos/rápidos (GPT-OSS 120B en Groq, Gemini Flash) tienen ventanas
-# de contexto grandes, pero no quiero pagar latencia ni coste por
+# Trunco el MD&A a un tamaño razonable de tokens. Claude Haiku y Gemini
+# Flash tienen ventanas de contexto grandes, pero no quiero pagar latencia
+# ni coste por
 # secciones de 50.000 caracteres cuando el fallback trajo el documento
 # completo en vez de solo el MD&A.
 MAX_CARACTERES_MDA = 12000
@@ -475,51 +479,6 @@ Responde ÚNICAMENTE con un JSON válido, en español, sin texto antes ni despu�
 }}"""
 
 
-def llamar_groq(prompt: str) -> str:
-    """
-    Sigo llamando a esta función "groq" porque es el nombre del hueco
-    (el segundo voto ciego, cruzado con Gemini), no el proveedor real
-    -- ya cambió una vez hoy de Llama 3.3 70B a GPT-OSS 120B bajo el
-    mismo nombre. Ahora sirvo el modelo vía OpenRouter en vez de Groq
-    directamente: Groq capaba las peticiones grandes de este proyecto a
-    8000 tokens por request (nuestro prompt real pide 9000-10000) y no
-    dejaba subir de tier ("Developer tier upgrades are temporarily
-    unavailable"). Probado en real contra BBW: aguanta el prompt
-    completo, responde en español con la instrucción de construir_prompt,
-    y sigue el modo JSON de forma fiable -- es de los pocos modelos
-    gratuitos de OpenRouter que declara soporte oficial de response_format.
-
-    Es un modelo "razonador" (piensa en cadena antes de responder), y
-    los tokens de razonamiento cuentan contra max_tokens -- si no fijo
-    uno explícito y generoso, el modelo puede gastárselo todo pensando
-    y devolver content: null (lo vi en real: 'NoneType' object has no
-    attribute 'find' al parsear). max_tokens alto + reasoning.effort
-    bajo (que solo ~20% del presupuesto se vaya en pensar, según la
-    doc de OpenRouter) reduce mucho el riesgo, aunque no lo elimina del
-    todo -- por eso parsear_json_llm() también sabe tratar una
-    respuesta vacía sin reventar.
-    """
-    import requests
-    respuesta = requests.post(
-        "https://openrouter.ai/api/v1/chat/completions",
-        headers={"Authorization": f"Bearer {os.environ['OPENROUTER_API_KEY']}"},
-        json={
-            "model": "nvidia/nemotron-3-super-120b-a12b:free",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
-            "response_format": {"type": "json_object"},
-            "max_tokens": 4000,
-            "reasoning": {"effort": "low"},
-        },
-        timeout=90,
-    )
-    respuesta.raise_for_status()
-    data = respuesta.json()
-    if "choices" not in data:
-        raise RuntimeError(f"OpenRouter no devolvió 'choices': {data}")
-    return data["choices"][0]["message"]["content"]
-
-
 def llamar_gemini(prompt: str) -> str:
     """
     Llamo a Gemini Flash con el SDK nuevo (google-genai). El paquete
@@ -542,17 +501,17 @@ def llamar_gemini(prompt: str) -> str:
     return respuesta.text
 
 
-def llamar_claude(prompt: str) -> str: # Funcion alternativa que llama a Claude Haiku 4.5 vía la API de Anthropic, si se configura MODELO_SECUNDARIO=claude en el .env.
+def llamar_claude(prompt: str) -> str:
     """
-    Llamo a Claude Haiku 4.5 vía la API de Anthropic. Existe como
-    alternativa de pago (céntimos) al segundo voto: la cuota gratuita
-    de Gemini (20 llamadas/día) se queda corta para pasadas grandes o
-    para el backtest histórico. Se activa con MODELO_SECUNDARIO=claude
-    en el .env — sin tocar código.
+    Llamo a Claude Haiku 4.5 vía la API de Anthropic. Ocupa el hueco que
+    antes tenía un modelo gratuito vía OpenRouter (Llama, GPT-OSS,
+    Nemotron): fallaba con JSON roto o 429/503 del proveedor en una
+    parte relevante de los casos (medido en las pasadas de sep-2026), y
+    de pago pero sin ese cuello de botella cuesta céntimos por llamada.
 
-    Claude no tiene modo JSON forzado como Groq/Gemini: a veces envuelve
-    la respuesta en una valla ```json. La quito aquí para que el caller
-    reciba JSON limpio siempre, venga del modelo que venga.
+    Claude no tiene modo JSON forzado como Gemini: a veces envuelve la
+    respuesta en una valla ```json. La quito aquí para que el caller
+    reciba JSON limpio siempre.
     """
     from anthropic import Anthropic
 
@@ -572,22 +531,8 @@ def llamar_claude(prompt: str) -> str: # Funcion alternativa que llama a Claude 
     return texto.strip()
 
 
-def modelo_secundario() -> str:
-    """
-    El segundo voto ciego: gemini (gratis, por defecto) o claude (de
-    pago, sin cuello de cuota). Lo decide el .env, no el código.
-    """
-    valor = os.getenv("MODELO_SECUNDARIO", "gemini").strip().lower()
-    if valor not in ("gemini", "claude"):
-        log.warning(f"MODELO_SECUNDARIO={valor!r} no reconocido — uso gemini")
-        return "gemini"
-    return valor
-
-
 def llamar_modelo(modelo: str, prompt: str) -> str:
     """Despacho único: todos los scripts llaman a los LLM por aquí."""
-    if modelo == "groq":
-        return llamar_groq(prompt)
     if modelo == "gemini":
         return llamar_gemini(prompt)
     if modelo == "claude":
@@ -794,7 +739,7 @@ def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict): #Fun
 def main(): #Función principal que se ejecuta al correr el script desde la línea de comandos.
     parser = argparse.ArgumentParser(description="Agente Detective de la Capa 3")
     parser.add_argument("--ticker", required=True)
-    parser.add_argument("--modelo", choices=["groq", "gemini", "claude"], required=True)
+    parser.add_argument("--modelo", choices=["claude", "gemini"], required=True)
     args = parser.parse_args()
 
     conn = conectar_db()

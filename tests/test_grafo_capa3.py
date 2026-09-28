@@ -1,6 +1,6 @@
 """
 tests/test_grafo_capa3.py — el grafo de LangGraph de la Capa 3, con
-Detective y Auditor completamente simulados (nunca llama a Groq,
+Detective y Auditor completamente simulados (nunca llama a Claude,
 Gemini, ni a una base de datos real). Lo que pruebo es la ORQUESTACIÓN:
 que el fan-out a los dos Detectives y el fan-in al Auditor se comportan
 como digo en el docstring de grafo_capa3.py, no la lógica de análisis
@@ -12,14 +12,6 @@ import pytest
 import detective
 import auditor
 import grafo_capa3
-
-
-@pytest.fixture(autouse=True)
-def modelo_secundario_fijo(monkeypatch):
-    # Sin esto, modelo_secundario() lee MODELO_SECUNDARIO del entorno —
-    # lo fijo a "gemini" para que el grafo sea el mismo en cualquier
-    # máquina que corra estos tests.
-    monkeypatch.delenv("MODELO_SECUNDARIO", raising=False)
 
 
 class _ConexionFalsa:
@@ -69,19 +61,19 @@ def test_los_dos_detectives_corren_y_el_auditor_los_espera(monkeypatch):
 
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")
 
-    assert sorted(llamadas["detective"]) == ["gemini", "groq"], \
-        "los dos modelos por defecto (groq + secundario) deben correr"
-    assert sorted(llamadas["guardar_detective"]) == ["gemini", "groq"]
+    assert sorted(llamadas["detective"]) == ["claude", "gemini"], \
+        "los dos modelos fijos (claude + gemini) deben correr"
+    assert sorted(llamadas["guardar_detective"]) == ["claude", "gemini"]
     assert llamadas["auditor"] == 1, "el auditor corre una vez, tras esperar a los dos Detectives"
     assert llamadas["guardar_auditor"] == 1
-    assert estado_final["resultado_groq"] is not None
-    assert estado_final["resultado_secundario"] is not None
+    assert estado_final["resultado_claude"] is not None
+    assert estado_final["resultado_gemini"] is not None
     assert len(estado_final["auditorias_guardadas"]) == 1
 
 
 def test_un_detective_falla_pero_el_auditor_sigue_corriendo(monkeypatch):
     def fake_ejecutar_detective(conn, ticker, modelo):
-        if modelo == "groq":
+        if modelo == "claude":
             return None  # simula "no encontrado" o texto_mda ausente
         return _resultado_detective_falso()
 
@@ -98,8 +90,8 @@ def test_un_detective_falla_pero_el_auditor_sigue_corriendo(monkeypatch):
 
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")
 
-    assert estado_final["fallo_groq"] is True
-    assert estado_final["resultado_secundario"] is not None
+    assert estado_final["fallo_claude"] is True
+    assert estado_final["resultado_gemini"] is not None
     assert auditor_llamado["veces"] == 1, "con UN detective vivo, el auditor sigue teniendo sentido"
 
 
@@ -115,8 +107,8 @@ def test_los_dos_detectives_fallan_el_auditor_no_corre(monkeypatch):
 
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")
 
-    assert estado_final["fallo_groq"] is True
-    assert estado_final["fallo_secundario"] is True
+    assert estado_final["fallo_claude"] is True
+    assert estado_final["fallo_gemini"] is True
     assert auditor_llamado["veces"] == 0, "sin ningún Detective vivo, no hay nada que auditar"
     assert estado_final["auditorias_guardadas"] == []
 
@@ -131,18 +123,18 @@ def test_modelos_a_ejecutar_restringe_que_detective_corre(monkeypatch):
     monkeypatch.setattr(auditor, "ejecutar_auditor", lambda *a, **k: [])
     monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: None)
 
-    estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE", modelos_a_ejecutar=["groq"])
+    estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE", modelos_a_ejecutar=["claude"])
 
-    assert llamadas == ["groq"], "solo debe correr el modelo pedido, no el secundario"
-    assert estado_final["resultado_groq"] is not None
-    assert estado_final["resultado_secundario"] is None
-    assert estado_final["fallo_secundario"] is False, \
+    assert llamadas == ["claude"], "solo debe correr el modelo pedido, no el otro"
+    assert estado_final["resultado_claude"] is not None
+    assert estado_final["resultado_gemini"] is None
+    assert estado_final["fallo_gemini"] is False, \
         "el modelo que no se pidió no cuenta como fallo, simplemente no corrió"
 
 
 def test_excepcion_en_detective_se_convierte_en_fallo_no_en_crash(monkeypatch):
     def _explota(conn, ticker, modelo):
-        raise RuntimeError("Groq devolvió 429")
+        raise RuntimeError("Claude devolvió 429")
 
     monkeypatch.setattr(detective, "ejecutar_detective", _explota)
     monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: None)
@@ -152,5 +144,5 @@ def test_excepcion_en_detective_se_convierte_en_fallo_no_en_crash(monkeypatch):
     # No debe propagar la excepción -- el grafo la convierte en fallo_*
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")
 
-    assert estado_final["fallo_groq"] is True
-    assert estado_final["fallo_secundario"] is True
+    assert estado_final["fallo_claude"] is True
+    assert estado_final["fallo_gemini"] is True

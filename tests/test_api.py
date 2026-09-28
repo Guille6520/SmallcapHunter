@@ -215,22 +215,22 @@ def test_analizar_candidata_dispara_el_grafo(monkeypatch, cliente):
         llamada["ticker"] = ticker
         llamada["modelos"] = modelos
         return {
-            "resultado_groq": {"ok": True},
-            "resultado_secundario": None,
+            "resultado_claude": {"ok": True},
+            "resultado_gemini": None,
             "auditorias_guardadas": [{"veredicto_final": "INTERESANTE"}],
         }
 
     monkeypatch.setattr(api, "ejecutar_grafo_capa3", fake_ejecutar_grafo)
 
-    r = cliente.post("/candidatas/nuvb/analizar?modelos=groq")
+    r = cliente.post("/candidatas/nuvb/analizar?modelos=claude")
 
     assert r.status_code == 200
     body = r.json()
     assert body["ticker"] == "NUVB"
-    assert body["detective_groq_ok"] is True
-    assert body["detective_secundario_ok"] is False
+    assert body["detective_claude_ok"] is True
+    assert body["detective_gemini_ok"] is False
     assert body["auditorias_guardadas"] == 1
-    assert llamada["modelos"] == ["groq"]
+    assert llamada["modelos"] == ["claude"]
 
 
 def test_analizar_candidata_no_encontrada_devuelve_404(monkeypatch, cliente):

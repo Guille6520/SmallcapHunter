@@ -8,12 +8,12 @@ vuelva a leer el texto original con ojo crítico y compruebe si la tesis
 se sostiene, si hay algo que el Detective pasó por alto, y si el
 veredicto preliminar es razonable.
 
-Cruzado a propósito: si el Detective fue Groq, el Auditor es Gemini, y
+Cruzado a propósito: si el Detective fue Claude, el Auditor es Gemini, y
 viceversa. Un modelo auditando su propio análisis tiende a confirmar su
 propio sesgo; cruzarlos da una segunda opinión de verdad independiente.
 
 Reutilizo de detective.py todo lo que ya está probado: el contexto de
-la empresa, las llamadas a Groq/Gemini, y el verificador de citas
+la empresa, las llamadas a Claude/Gemini, y el verificador de citas
 determinista. No reinvento nada de eso aquí.
 
 Al guardar cada auditoría mando un aviso por Telegram, igual que el
@@ -26,7 +26,7 @@ Cómo usarlo:
   python auditor.py --ticker PLAY
 
   # O especifica cuál Detective auditar en concreto:
-  python auditor.py --ticker PLAY --detective-modelo groq
+  python auditor.py --ticker PLAY --detective-modelo claude
 """
 
 import json
@@ -34,7 +34,7 @@ import logging
 import argparse
 
 from detective import (
-    conectar_db, obtener_contexto_empresa, llamar_modelo, modelo_secundario,
+    conectar_db, obtener_contexto_empresa, llamar_modelo,
     parsear_json_llm, verificar_citas, formatear_eventos_8k,
     formatear_senales_mercado, texto_fuente_citas, MAX_CARACTERES_MDA,
 )
@@ -47,14 +47,19 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Cruce fijo: claude y gemini son los dos votos ciegos activos. "groq" ya
+# no se ejecuta (era un modelo gratuito vía OpenRouter, retirado en
+# sep-2026 por JSON roto y 429/503 frecuentes) pero queda como valor
+# válido para poder seguir auditando análisis viejos guardados con ese
+# nombre -- no los borro ni los reetiqueto, son historial real.
+CRUCE_MODELOS = {"claude": "gemini", "gemini": "claude", "groq": "gemini"}
+
+
 def modelo_opuesto(modelo: str) -> str:
-    """
-    El cruce automático, ahora dinámico: el opuesto de groq es el
-    secundario configurado (gemini o claude), y el opuesto de cualquier
-    secundario es groq. Así los análisis viejos hechos con gemini se
-    siguen auditando bien aunque hoy el secundario sea claude.
-    """
-    return modelo_secundario() if modelo == "groq" else "groq"
+    """El cruce automático: claude<->gemini. 'groq' (legado) se audita con
+    gemini, que era el secundario por defecto cuando esas filas se
+    generaron."""
+    return CRUCE_MODELOS[modelo]
 
 
 def obtener_analisis_detective(conn, empresa_id: int, modelo_detective: str = None) -> list:
@@ -188,7 +193,7 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
     resultados = []
 
     for detective_id, modelo_original, respuesta_detective, _ in analisis_previos:
-        if modelo_original not in ("groq", "gemini", "claude"):
+        if modelo_original not in CRUCE_MODELOS:
             log.warning(f"Modelo desconocido en fila {detective_id}: {modelo_original}")
             continue
         modelo_auditor = modelo_opuesto(modelo_original)
@@ -287,7 +292,8 @@ def guardar_resultado_auditor(conn, resultado: dict):
 def main():
     parser = argparse.ArgumentParser(description="Agente Auditor de la Capa 3 (cruzado)")
     parser.add_argument("--ticker", required=True)
-    parser.add_argument("--detective-modelo", choices=["groq", "gemini", "claude"], default=None)
+    parser.add_argument("--detective-modelo", choices=["claude", "gemini", "groq"], default=None,
+                        help="'groq' solo tiene sentido para auditar análisis históricos; ya no se genera")
     args = parser.parse_args()
 
     conn = conectar_db()
