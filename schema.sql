@@ -475,6 +475,47 @@ create index on auditorias (empresa_id, fecha_analisis);
 create index on auditorias (veredicto);
 
 
+-- Observabilidad de cada llamada real a un LLM: coste, latencia y tasa
+-- de error por modelo. Nació de una necesidad muy concreta (sep-2026):
+-- para decidir si cambiar de modelo tuvimos que comprobar a mano, día
+-- tras día, el panel de cada proveedor -- esto lo deja registrado en el
+-- propio sistema. No es solo el pipeline de Detective/Auditor: también
+-- cubre el chat y el resumen de negocio del dashboard, que son la otra
+-- superficie real de gasto.
+create table llm_calls (
+    id          serial primary key,
+    fecha       timestamptz not null default now(),
+
+    -- Qué parte del sistema hizo la llamada, no solo qué modelo.
+    -- 'detective' y 'auditor' son el pipeline real; 'chat' y
+    -- 'resumen_negocio' son las llamadas del dashboard.
+    origen      varchar(30) not null
+                check (origen in ('detective', 'auditor', 'chat', 'resumen_negocio')),
+
+    modelo      varchar(20) not null,
+    ticker      varchar(10),
+
+    -- Tokens reales que devolvió el proveedor, no una estimación --
+    -- pueden venir NULL si la llamada falló antes de completarse o si
+    -- el proveedor no expone el dato en esa respuesta.
+    tokens_entrada      integer,
+    tokens_salida       integer,
+
+    latencia_segundos   decimal(8, 2) not null,
+
+    -- tokens x precio publicado (ver PRECIOS_USD_POR_TOKEN en
+    -- detective.py). NULL si no hay tokens o no conozco el precio de
+    -- ese modelo -- nunca invento un coste.
+    coste_estimado_usd  decimal(10, 6),
+
+    exito       boolean not null,
+    tipo_error  text
+);
+
+create index on llm_calls (fecha);
+create index on llm_calls (modelo, fecha);
+
+
 -- Aquí mido si el sistema funciona de verdad.
 -- Comparo el veredicto con lo que pasó realmente después.
 -- La referencia a empresa_id la saco de auditorias, no la repito aquí.

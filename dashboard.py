@@ -1,9 +1,10 @@
 """
 dashboard.py — interfaz Streamlit de SmallCap Hunter
 
-Tres vistas:
+Cinco vistas:
   - Panorama: el embudo completo (de miles de empresas a un puñado de
     candidatas) y los últimos veredictos de los agentes.
+  - Candidatas: todas las candidatas vigentes con su fecha de análisis.
   - Empresa: la ficha de una candidata — scores desagregados, compras
     de insiders, evolución de revenue y margen, el MD&A real, y lo que
     dijeron el Detective y el Auditor.
@@ -11,6 +12,9 @@ Tres vistas:
     contexto que vio el Detective (scores, insiders, MD&A, veredictos).
     Para preguntarle cosas como "¿por qué el score temporal es tan
     bajo?" o "resúmeme los riesgos en dos frases".
+  - Observabilidad: coste, latencia y tasa de error de cada llamada real
+    a un LLM (Detective, Auditor, chat, resumen de negocio) — ver
+    vista_observabilidad() y la tabla llm_calls en schema.sql.
 
 El chat reutiliza obtener_contexto_empresa de detective.py — así lo que
 el chat "sabe" de una empresa es exactamente lo que sabe el pipeline,
@@ -25,13 +29,14 @@ Cómo lanzarlo:
 
 import os
 import json
+import time
 import logging
 
 import pandas as pd
 import psycopg2
 import streamlit as st
 
-from detective import obtener_contexto_empresa, MAX_CARACTERES_MDA
+from detective import obtener_contexto_empresa, MAX_CARACTERES_MDA, RespuestaLLM, registrar_llamada_llm
 from notificador_telegram import enviar_telegram
 from dotenv import load_dotenv
 
@@ -131,7 +136,11 @@ def chat_claude(mensajes: list) -> str:
         system=sistema,
         messages=turnos,
     )
-    return respuesta.content[0].text
+    return RespuestaLLM(
+        respuesta.content[0].text,
+        tokens_entrada=respuesta.usage.input_tokens,
+        tokens_salida=respuesta.usage.output_tokens,
+    )
 
 
 def chat_gemini(mensajes: list) -> str:
@@ -147,7 +156,12 @@ def chat_gemini(mensajes: list) -> str:
         model="gemini-2.5-flash",
         contents=plano + "\n\n[ASSISTANT]\n",
     )
-    return respuesta.text
+    uso = getattr(respuesta, "usage_metadata", None)
+    return RespuestaLLM(
+        respuesta.text,
+        tokens_entrada=getattr(uso, "prompt_token_count", None) if uso else None,
+        tokens_salida=getattr(uso, "candidates_token_count", None) if uso else None,
+    )
 
 
 def construir_contexto_chat(conn, ticker: str) -> str:
@@ -234,10 +248,21 @@ No hables de resultados financieros ni de si es buena inversión, solo de qué h
     mensajes = [{"role": "user", "content": prompt}]
     resumen, errores = None, []
     for nombre, llamar in [("claude", chat_claude), ("gemini", chat_gemini)]:
+        t0 = time.time()
         try:
             resumen = llamar(mensajes)
+            registrar_llamada_llm(
+                origen="resumen_negocio", modelo=nombre, ticker=contexto.get("ticker"),
+                tokens_entrada=getattr(resumen, "tokens_entrada", None),
+                tokens_salida=getattr(resumen, "tokens_salida", None),
+                segundos=time.time() - t0, exito=True,
+            )
             break
         except Exception as e:
+            registrar_llamada_llm(
+                origen="resumen_negocio", modelo=nombre, ticker=contexto.get("ticker"),
+                segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+            )
             errores.append(f"{nombre}: {str(e)[:150]}")
 
     if resumen is None:
@@ -709,6 +734,103 @@ def vista_empresa(ticker: str):
                     st.write("**Riesgos:** " + "; ".join(resp["riesgos"]))
 
 
+def vista_observabilidad():
+    """
+    Coste, latencia y tasa de error de cada llamada real a un LLM --
+    Detective, Auditor, chat y resumen de negocio. Nace de una necesidad
+    real: para decidir si cambiar de modelo en sep-2026 tuvimos que
+    comprobar a mano, día tras día, el panel de cada proveedor
+    (OpenRouter, Anthropic). Esto lo deja registrado en el propio
+    sistema, con datos reales, no estimados a ojo.
+    """
+    st.subheader("📈 Costes y fiabilidad")
+    st.caption(
+        "Cada llamada real a un LLM se registra en llm_calls al hacerse "
+        "-- coste, latencia y errores del propio sistema, no de un panel externo."
+    )
+
+    resumen = query_df("""
+        select count(*) as llamadas,
+               count(*) filter (where exito) as exitos,
+               coalesce(sum(coste_estimado_usd), 0) as coste_total,
+               avg(latencia_segundos) as latencia_media
+        from llm_calls
+        where fecha >= now() - interval '30 days'
+    """)
+
+    if resumen.empty or resumen.iloc[0]["llamadas"] == 0:
+        st.info(
+            "Todavía no hay llamadas registradas en los últimos 30 días. "
+            "Se rellena solo según se usa el sistema (detective.py, "
+            "auditor.py, el chat y el resumen de negocio del dashboard)."
+        )
+        return
+
+    r = resumen.iloc[0]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Llamadas (30d)", f"{int(r.llamadas):,}")
+    c2.metric("Tasa de éxito", f"{100 * r.exitos / r.llamadas:.0f}%")
+    c3.metric("Coste estimado (30d)", f"${r.coste_total:.2f}")
+    c4.metric("Latencia media", f"{r.latencia_media:.1f}s")
+
+    st.divider()
+    izq, der = st.columns(2)
+
+    with izq:
+        st.markdown("**Por modelo**")
+        por_modelo = query_df("""
+            select modelo,
+                   count(*) as llamadas,
+                   round(100.0 * count(*) filter (where exito) / count(*), 0) as pct_exito,
+                   coalesce(sum(coste_estimado_usd), 0) as coste,
+                   percentile_cont(0.5) within group (order by latencia_segundos) as p50,
+                   percentile_cont(0.95) within group (order by latencia_segundos) as p95
+            from llm_calls
+            where fecha >= now() - interval '30 days'
+            group by modelo
+            order by llamadas desc
+        """)
+        st.dataframe(
+            por_modelo, use_container_width=True, hide_index=True,
+            column_config={
+                "pct_exito": st.column_config.ProgressColumn(
+                    "% éxito", min_value=0, max_value=100, format="%d%%"
+                ),
+                "coste": st.column_config.NumberColumn("coste $", format="$%.3f"),
+                "p50": st.column_config.NumberColumn("p50 (s)", format="%.1f"),
+                "p95": st.column_config.NumberColumn("p95 (s)", format="%.1f"),
+            },
+        )
+
+    with der:
+        st.markdown("**Gasto diario**")
+        diario = query_df("""
+            select date_trunc('day', fecha)::date as dia,
+                   coalesce(sum(coste_estimado_usd), 0) as coste
+            from llm_calls
+            where fecha >= now() - interval '30 days'
+            group by dia order by dia
+        """)
+        if not diario.empty:
+            st.line_chart(diario.set_index("dia")["coste"])
+        else:
+            st.caption("Sin coste registrado todavía (p.ej. si solo se ha usado Gemini gratis).")
+
+    st.divider()
+    st.markdown("**Últimos errores**")
+    errores = query_df("""
+        select fecha, origen, modelo, ticker, tipo_error
+        from llm_calls
+        where not exito
+        order by fecha desc
+        limit 20
+    """)
+    if errores.empty:
+        st.success("Sin errores registrados en los últimos 30 días.")
+    else:
+        st.dataframe(errores, use_container_width=True, hide_index=True)
+
+
 def vista_chat(ticker: str, modelo: str):
     st.subheader(f"💬 Chat sobre {ticker}")
     st.caption(
@@ -744,12 +866,20 @@ def vista_chat(ticker: str, modelo: str):
         )
         with st.chat_message("assistant"):
             with st.spinner(f"Pensando ({modelo})..."):
+                t0 = time.time()
                 try:
-                    if modelo == "claude":
-                        respuesta = chat_claude(mensajes)
-                    else:
-                        respuesta = chat_gemini(mensajes)
+                    respuesta = chat_claude(mensajes) if modelo == "claude" else chat_gemini(mensajes)
+                    registrar_llamada_llm(
+                        origen="chat", modelo=modelo, ticker=ticker,
+                        tokens_entrada=getattr(respuesta, "tokens_entrada", None),
+                        tokens_salida=getattr(respuesta, "tokens_salida", None),
+                        segundos=time.time() - t0, exito=True,
+                    )
                 except Exception as e:
+                    registrar_llamada_llm(
+                        origen="chat", modelo=modelo, ticker=ticker,
+                        segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+                    )
                     respuesta = f"Error llamando a {modelo}: {e}"
             st.write(respuesta)
         st.session_state[clave].append({"role": "assistant", "content": respuesta})
@@ -763,7 +893,7 @@ def main():
     with st.sidebar:
         st.markdown("### Navegación")
         vista = st.radio(
-            "Vista", ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat"],
+            "Vista", ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat", "📈 Observabilidad"],
             label_visibility="collapsed",
         )
 
@@ -811,6 +941,8 @@ def main():
         vista_empresa(ticker)
     elif vista == "💬 Chat" and ticker:
         vista_chat(ticker, modelo)
+    elif vista == "📈 Observabilidad":
+        vista_observabilidad()
     else:
         st.info("Selecciona una empresa en la barra lateral.")
 

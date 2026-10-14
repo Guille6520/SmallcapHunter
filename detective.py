@@ -35,6 +35,7 @@ Cómo usarlo:
 import os
 import re
 import json
+import time
 import logging
 import argparse
 import unicodedata
@@ -66,9 +67,8 @@ DB_CONFIG = {
 
 # Trunco el MD&A a un tamaño razonable de tokens. Claude Haiku y Gemini
 # Flash tienen ventanas de contexto grandes, pero no quiero pagar latencia
-# ni coste por
-# secciones de 50.000 caracteres cuando el fallback trajo el documento
-# completo en vez de solo el MD&A.
+# ni coste por secciones de 50.000 caracteres cuando el fallback trajo el
+# documento completo en vez de solo el MD&A.
 MAX_CARACTERES_MDA = 12000
 
 # Los eventos 8-K son cortos por naturaleza, pero el fallback puede
@@ -95,6 +95,34 @@ ITEMS_8K_DESCRIPCION = {
     "3.02": "venta de acciones no registradas (posible dilución)",
     "5.02": "salida o nombramiento de directivos",
 }
+
+# $/token de entrada y salida, para estimar el coste real de cada llamada
+# (tokens reales que devuelve el proveedor x precio publicado, no una
+# media). Comprobado en claude.com/pricing el 28-sep-2026: Haiku 4.5 =
+# $1/$5 por millón de tokens de entrada/salida. Gemini Flash sigue en el
+# tier gratuito de GEMINI_API_KEY (sin facturación activada) -- si algún
+# día se activa facturación en esa cuenta esto pasa a estar mal, la API
+# no expone el tier de la cuenta, hay que actualizarlo a mano.
+PRECIOS_USD_POR_TOKEN = {
+    "claude": {"entrada": 1.0 / 1_000_000, "salida": 5.0 / 1_000_000},
+    "gemini": {"entrada": 0.0, "salida": 0.0},
+}
+
+
+class RespuestaLLM(str):
+    """
+    El texto de la respuesta, tal cual lo devolvía siempre llamar_modelo()
+    -- se comporta exactamente como el str que ya esperaba todo el que la
+    consume (parsear_json_llm, slicing para logs, comparaciones...),
+    porque ES un str, solo que con los tokens de entrada/salida colgados
+    como atributos extra. Así puedo medir coste real sin tocar la firma
+    de llamar_modelo() ni de ningún caller existente.
+    """
+    def __new__(cls, texto, tokens_entrada=None, tokens_salida=None):
+        obj = str.__new__(cls, texto or "")
+        obj.tokens_entrada = tokens_entrada
+        obj.tokens_salida = tokens_salida
+        return obj
 
 
 def conectar_db():
@@ -498,7 +526,12 @@ def llamar_gemini(prompt: str) -> str:
             response_mime_type="application/json",
         ),
     )
-    return respuesta.text
+    uso = getattr(respuesta, "usage_metadata", None)
+    return RespuestaLLM(
+        respuesta.text,
+        tokens_entrada=getattr(uso, "prompt_token_count", None) if uso else None,
+        tokens_salida=getattr(uso, "candidates_token_count", None) if uso else None,
+    )
 
 
 def llamar_claude(prompt: str) -> str:
@@ -528,7 +561,11 @@ def llamar_claude(prompt: str) -> str:
         texto = texto.split("\n", 1)[1] if "\n" in texto else texto
         if texto.rstrip().endswith("```"):
             texto = texto.rstrip()[:-3]
-    return texto.strip()
+    return RespuestaLLM(
+        texto.strip(),
+        tokens_entrada=respuesta.usage.input_tokens,
+        tokens_salida=respuesta.usage.output_tokens,
+    )
 
 
 def llamar_modelo(modelo: str, prompt: str) -> str:
@@ -538,6 +575,46 @@ def llamar_modelo(modelo: str, prompt: str) -> str:
     if modelo == "claude":
         return llamar_claude(prompt)
     raise ValueError(f"Modelo desconocido: {modelo}")
+
+
+def registrar_llamada_llm(*, origen: str, modelo: str, ticker: str = None,
+                           tokens_entrada: int = None, tokens_salida: int = None,
+                           segundos: float, exito: bool, tipo_error: str = None):
+    """
+    Deja constancia de cada llamada real a un LLM en llm_calls: coste,
+    latencia y tasa de error por modelo, con datos reales del propio
+    sistema en vez de tener que mirar a mano el panel de cada proveedor
+    -- lo hicimos así, a mano, durante días, para decidir si cambiar de
+    modelo (ver benchmark_modelos.py, que no vive en este repo).
+
+    Nunca debe romper el flujo real: si falla el propio registro, lo
+    aviso en el log y sigo -- un problema de observabilidad no puede
+    tirar un análisis que sí funcionó.
+    """
+    precios = PRECIOS_USD_POR_TOKEN.get(modelo)
+    coste = None
+    if precios and tokens_entrada is not None and tokens_salida is not None:
+        coste = tokens_entrada * precios["entrada"] + tokens_salida * precios["salida"]
+
+    try:
+        conn = conectar_db()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """
+                insert into llm_calls (
+                    origen, modelo, ticker, tokens_entrada, tokens_salida,
+                    latencia_segundos, coste_estimado_usd, exito, tipo_error
+                ) values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (origen, modelo, ticker, tokens_entrada, tokens_salida,
+                 round(segundos, 2), coste, exito, tipo_error)
+            )
+            conn.commit()
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning(f"No pude registrar en llm_calls (origen={origen}, modelo={modelo}): {e}")
 
 
 def parsear_json_llm(texto: str) -> dict:
@@ -661,13 +738,34 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
     prompt = construir_prompt(contexto, formatear_casos_similares_rag(casos_similares))
 
     log.info(f"Llamando a {modelo} para {ticker}...")
-    texto_respuesta = llamar_modelo(modelo, prompt)
+    t0 = time.time()
+    try:
+        texto_respuesta = llamar_modelo(modelo, prompt)
+    except Exception as e:
+        registrar_llamada_llm(
+            origen="detective", modelo=modelo, ticker=ticker,
+            segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+        )
+        raise
 
     try:
         respuesta_json = parsear_json_llm(texto_respuesta)
     except json.JSONDecodeError as e:
+        registrar_llamada_llm(
+            origen="detective", modelo=modelo, ticker=ticker,
+            tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
+            tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
+            segundos=time.time() - t0, exito=False, tipo_error=f"json_invalido: {e}"[:200],
+        )
         log.error(f"El modelo no devolvió JSON válido: {e}\nRespuesta cruda: {texto_respuesta[:500]}")
         return None
+
+    registrar_llamada_llm(
+        origen="detective", modelo=modelo, ticker=ticker,
+        tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
+        tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
+        segundos=time.time() - t0, exito=True,
+    )
 
     # Verifico contra el MD&A Y los eventos 8-K juntos: el prompt ofrece
     # los dos como fuente citable, así que la verificación tiene que
