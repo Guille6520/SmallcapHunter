@@ -285,6 +285,7 @@ smallcap_hunter/
 ├── filtro_capa1.py                   # 4 filtros binarios de descarte
 ├── scorer_capa2.py                   # 4 sub-scores numéricos (0-40)
 ├── detective.py                      # agente LLM: tesis + citas verificables + RAG (Capa 4)
+├── verificador_citas.py              # verificador determinista de citas (v2, por categorías)
 ├── auditor.py                        # agente LLM cruzado que impugna la tesis
 ├── grafo_capa3.py                    # Detective(s) + Auditor como grafo de LangGraph
 │
@@ -301,6 +302,8 @@ smallcap_hunter/
 ├── tests/
 │   ├── conftest.py
 │   ├── test_pipeline_offline.py      # normalización, filtros, scoring, regex, citas
+│   ├── test_verificador_citas.py     # categorías del verificador y umbral de ALUCINACION
+│   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
 │   └── test_api.py                   # endpoints de FastAPI
@@ -340,6 +343,26 @@ Veredicto de interés (no es consejo de inversión):
 
 Dos interfaces sobre el mismo dato: `dashboard.py` (Streamlit, para un
 humano) y `api.py` (FastAPI, para consumo por programa).
+
+### Verificación de citas (protocolo 2)
+
+Los modelos citan el documento en su idioma original (inglés) y aportan la
+traducción aparte (`cita_es`, que se enseña en el dashboard pero no se
+verifica). `verificador_citas.py` clasifica cada cita sin llamar a ningún
+LLM: exacta, exacta ignorando puntuación, fragmentos unidos con `...`,
+compra de insiders que coincide con el Form 4, casi literal o cifras de la
+misma tabla cuentan como **con soporte**; traducida, parafraseada, score
+del sistema o sin soporte, no. Con menos del 50 % de citas con soporte el
+análisis se marca `ALUCINACION`; entre el 50 y el 80 % solo lleva el aviso
+de "citas débiles". Se guardan los dos porcentajes (el literal estricto y
+el de soporte) para poder comparar con el protocolo anterior.
+
+Qué no detecta: una cita real a la que el modelo le cuelga una explicación
+inventada. Para eso está el Auditor cruzado.
+
+Cada análisis guarda `version_protocolo` en su JSON; el orquestador trata
+como pendiente el de un protocolo anterior y lo rehace (las filas viejas se
+conservan). También reintenta las auditorías que quedaron sin guardarse.
 
 ---
 
@@ -396,16 +419,18 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   sistema que responde sin pasar por `verificar_citas()` (es
   conversación libre, no JSON estructurado); habría que forzar al chat
   a citar de forma parseable y reutilizar el mismo verificador
-- **Monitorización de calidad por modelo, continuada en el tiempo** — en
-  sep-2026 el modelo que ocupaba este hueco (Nemotron, gratuito vía
-  OpenRouter) empezó a devolver JSON roto y 429/503 con frecuencia
-  creciente; lo confirmé con un benchmark aparte
-  (`benchmark_modelos.py`, no versionado, mide % de JSON válido y % de
-  citas verificadas con el mismo prompt real) y sustituí ese hueco por
-  Claude Haiku 4.5. Sigue faltando automatizar esa comparación dentro
-  del propio proyecto (hoy es manual y puntual) para detectar el
-  próximo declive de calidad antes de que se note en producción, no
-  solo cuando ya está fallando.
+- **Alertas de calidad por modelo** — la pestaña Observabilidad ya
+  compara por modelo y protocolo el % de citas, las marcas ALUCINACION y
+  cuánto coinciden Claude y Gemini, pero hay que mirarla. Falta avisar por
+  Telegram cuando una métrica empeore (el declive de Nemotron en sep-2026
+  se notó tarde, cuando ya fallaba)
+- **Migraciones del esquema con Alembic** — hoy `schema.sql` solo sirve
+  para crear la base desde cero, y cada cambio posterior (una columna,
+  una tabla) se aplica a mano sobre la base que ya existe. Con
+  migraciones versionadas en SQL (el proyecto no usa ORM) se aplicarían
+  igual en cualquier base, y la CI podría comprobar que el esquema se
+  crea limpio. Es viable sin tocar el resto del código: pide un
+  directorio de migraciones y una revisión inicial con el esquema actual
   
 
 ---

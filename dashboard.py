@@ -714,7 +714,7 @@ def vista_empresa(ticker: str):
                 f"**{'Auditor' if es_auditor else 'Detective'}** · {r.modelo_llm} · "
                 f"{r.fecha_analisis:%Y-%m-%d %H:%M} → "
                 f"<span class='veredicto-{r.veredicto}'>{r.veredicto}</span> · "
-                f"citas verificadas {verif.get('citas_verificadas', '—')}/{verif.get('citas_totales', '—')}",
+                + texto_citas_verificadas(verif),
                 unsafe_allow_html=True,
             )
             if es_auditor:
@@ -732,6 +732,53 @@ def vista_empresa(ticker: str):
                     st.write(f"**Tesis:** {resp['tesis_inversion']}")
                 if resp.get("riesgos"):
                     st.write("**Riesgos:** " + "; ".join(resp["riesgos"]))
+
+            mostrar_citas(resp, verif)
+
+
+def texto_citas_verificadas(verif: dict) -> str:
+    """Cabecera de cada análisis. Los del protocolo 2 guardan cuántas citas
+    tienen soporte; los anteriores solo cuántas eran literales."""
+    total = verif.get("citas_totales", "—")
+    if "citas_soportadas" in verif:
+        texto = f"citas con soporte {verif['citas_soportadas']}/{total}"
+        if verif.get("citas_debiles"):
+            texto += " · ⚠️ citas débiles"
+        return texto
+    return f"citas literales {verif.get('citas_verificadas', '—')}/{total}"
+
+
+ETIQUETA_TIPO_CITA = {
+    "exacta": "✅ exacta",
+    "exacta_sin_puntuacion": "✅ exacta (otra puntuación)",
+    "fragmentos": "✅ fragmentos unidos",
+    "insiders": "✅ coincide con el Form 4",
+    "editada": "☑️ casi literal",
+    "tabla": "☑️ cifras de la misma tabla",
+    "score_del_sistema": "❌ es un score nuestro, no del documento",
+    "traducida": "❌ traducida: no se puede comprobar",
+    "parafrasis": "❌ parafraseada",
+    "sin_soporte": "❌ sin soporte en el texto",
+    "demasiado_corta": "❌ demasiado corta",
+}
+
+
+def mostrar_citas(resp: dict, verif: dict):
+    """Cada cita tal como está en el documento (inglés), su traducción para
+    leerla y el resultado de la comprobación. La traducción la escribe el
+    modelo y NO se verifica: lo comprobado es la cita original."""
+    detalle = verif.get("detalle") or []
+    if not detalle:
+        return
+    with st.expander(f"Citas ({len(detalle)})"):
+        for d in detalle:
+            etiqueta = ETIQUETA_TIPO_CITA.get(d.get("tipo"), "✅ verificada" if d.get("verificada") else "❌ no verificada")
+            # El $ lo interpreta Streamlit como LaTeX ("$1.2M ... $3M" se
+            # pintaría como una fórmula), así que lo escapo.
+            st.markdown(f"**{d.get('afirmacion', '')}** — {etiqueta}".replace("$", r"\$"))
+            st.markdown(f"> {d.get('cita_literal', '')}".replace("$", r"\$"))
+            if d.get("cita_es"):
+                st.caption(f"Traducción (del modelo, sin verificar): {d['cita_es']}".replace("$", r"\$"))
 
 
 def vista_observabilidad():
@@ -764,6 +811,7 @@ def vista_observabilidad():
             "Se rellena solo según se usa el sistema (detective.py, "
             "auditor.py, el chat y el resumen de negocio del dashboard)."
         )
+        bloque_calidad()
         return
 
     r = resumen.iloc[0]
@@ -790,6 +838,9 @@ def vista_observabilidad():
             group by modelo
             order by llamadas desc
         """)
+        # numeric de Postgres llega como Decimal y Streamlit lo pinta mal
+        # (escalado); a float para que las columnas y el gráfico se vean bien.
+        por_modelo[["pct_exito", "coste"]] = por_modelo[["pct_exito", "coste"]].astype(float)
         st.dataframe(
             por_modelo, use_container_width=True, hide_index=True,
             column_config={
@@ -812,6 +863,7 @@ def vista_observabilidad():
             group by dia order by dia
         """)
         if not diario.empty:
+            diario["coste"] = diario["coste"].astype(float)
             st.line_chart(diario.set_index("dia")["coste"])
         else:
             st.caption("Sin coste registrado todavía (p.ej. si solo se ha usado Gemini gratis).")
@@ -829,6 +881,139 @@ def vista_observabilidad():
         st.success("Sin errores registrados en los últimos 30 días.")
     else:
         st.dataframe(errores, use_container_width=True, hide_index=True)
+
+    bloque_calidad()
+
+
+def bloque_calidad():
+    """
+    La calidad de lo que dicen los modelos, no solo lo que cuestan: qué
+    parte de sus citas existe de verdad en el documento, cuántos análisis
+    acaba marcando el verificador como ALUCINACION, qué hace el Auditor
+    con el veredicto del Detective y cuánto coinciden los dos modelos.
+    Sale de lo que el pipeline ya guarda en auditorias: ninguna llamada
+    extra a un LLM.
+
+    Dos porcentajes, a propósito. "Literales" es el estricto de siempre: la
+    cita aparece tal cual en el documento. "Con soporte" es el del
+    verificador v2 (guiones, fragmentos unidos con "...", compras de
+    insiders contra el Form 4, tablas), que es el que decide la etiqueta
+    ALUCINACION. Se enseñan los dos y separados por protocolo para poder
+    comprobar si el prompt nuevo (citas en inglés, sin traducir) hace que
+    los modelos copien mejor, no solo que la vara sea más generosa. Los
+    análisis anteriores al protocolo 2 no tienen el segundo número.
+    """
+    st.divider()
+    st.subheader("🎯 Calidad del análisis por modelo")
+    st.caption(
+        "Calculado sobre los análisis ya guardados, sin llamadas extra a ningún "
+        "LLM. \"Literales\" es el porcentaje estricto de siempre (la cita está "
+        "copiada tal cual); \"con soporte\" es el del verificador nuevo y es el "
+        "que decide la etiqueta ALUCINACION. El protocolo 1 es el anterior "
+        "(citas traducidas al español); el 2, el actual (citas en inglés + "
+        "traducción aparte). Los análisis \"groq\" son históricos y no son "
+        "comparables uno a uno."
+    )
+
+    calidad = query_df("""
+        select modelo_llm as modelo,
+               coalesce((respuesta_llm->>'version_protocolo')::int, 1) as protocolo,
+               count(*) as analisis,
+               round(avg((verificacion_citas->>'porcentaje_verificado')::numeric), 0)::float as pct_literal,
+               round(avg((verificacion_citas->>'porcentaje_soportado')::numeric), 0)::float as pct_soportado,
+               count(*) filter (where veredicto = 'ALUCINACION') as alucinacion,
+               count(*) filter (where veredicto = 'MUY_INTERESANTE') as muy_interesante,
+               count(*) filter (where veredicto = 'INTERESANTE') as interesante,
+               count(*) filter (where veredicto = 'NADA_INTERESANTE') as nada_interesante
+        from auditorias
+        where veredicto is not null
+          and respuesta_llm ? 'veredicto_preliminar'
+          and verificacion_citas is not null
+        group by 1, 2
+        order by 1, 2
+    """)
+    if calidad.empty:
+        st.info("Todavía no hay análisis del Detective con citas verificadas.")
+        return
+
+    st.dataframe(
+        calidad, use_container_width=True, hide_index=True,
+        column_config={
+            "pct_literal": st.column_config.ProgressColumn(
+                "% citas literales", min_value=0, max_value=100, format="%d%%"
+            ),
+            "pct_soportado": st.column_config.ProgressColumn(
+                "% citas con soporte", min_value=0, max_value=100, format="%d%%"
+            ),
+            "analisis": "análisis",
+            "alucinacion": "marcados ALUCINACION",
+            "muy_interesante": "muy interesante",
+            "interesante": "interesante",
+            "nada_interesante": "nada interesante",
+        },
+    )
+
+    izq, der = st.columns(2)
+
+    with izq:
+        st.markdown("**% de citas literales por semana**")
+        semanal = query_df("""
+            select date_trunc('week', fecha_analisis)::date as semana,
+                   modelo_llm as modelo,
+                   round(avg((verificacion_citas->>'porcentaje_verificado')::numeric), 0)::float as pct_citas
+            from auditorias
+            where veredicto is not null
+              and respuesta_llm ? 'veredicto_preliminar'
+              and verificacion_citas is not null
+            group by 1, 2
+            order by 1, 2
+        """)
+        if not semanal.empty:
+            st.line_chart(semanal.pivot(index="semana", columns="modelo", values="pct_citas"))
+
+    with der:
+        st.markdown("**Qué hace el Auditor con el veredicto del Detective**")
+        relaciones = query_df("""
+            select modelo_llm as auditor,
+                   respuesta_llm->>'relacion_con_veredicto_detective' as relacion,
+                   count(*) as n
+            from auditorias
+            where respuesta_llm ? 'relacion_con_veredicto_detective'
+            group by 1, 2
+        """)
+        if not relaciones.empty:
+            st.dataframe(
+                relaciones.pivot_table(
+                    index="auditor", columns="relacion", values="n",
+                    aggfunc="sum", fill_value=0,
+                ),
+                use_container_width=True,
+            )
+
+        acuerdo = query_df("""
+            with ult as (
+                select distinct on (empresa_id, modelo_llm)
+                       empresa_id, modelo_llm,
+                       respuesta_llm->>'veredicto_preliminar' as v
+                from auditorias
+                where veredicto is not null
+                  and respuesta_llm ? 'veredicto_preliminar'
+                  and modelo_llm in ('claude', 'gemini')
+                order by empresa_id, modelo_llm, fecha_analisis desc
+            )
+            select count(*) as empresas,
+                   count(*) filter (where c.v = g.v) as coinciden
+            from ult c
+            join ult g
+              on c.empresa_id = g.empresa_id
+             and c.modelo_llm = 'claude' and g.modelo_llm = 'gemini'
+        """).iloc[0]
+        if acuerdo.empresas:
+            st.metric(
+                "Claude y Gemini coinciden en el veredicto",
+                f"{int(acuerdo.coinciden)} de {int(acuerdo.empresas)} "
+                f"({100 * acuerdo.coinciden / acuerdo.empresas:.0f}%)",
+            )
 
 
 def vista_chat(ticker: str, modelo: str):
