@@ -33,17 +33,22 @@ Cómo usarlo:
 """
 
 import os
-import re
 import json
 import time
 import logging
 import argparse
-import unicodedata
 
 import psycopg2
 
 from notificador_telegram import notificar_analisis
 from embeddings import generar_embedding_consulta, vector_a_literal_pgvector
+# El verificador vive en su propio módulo (sin dependencias pesadas) para
+# que el orquestador pueda leer VERSION_PROTOCOLO sin importar los SDKs de
+# los LLM. Lo reexporto aquí porque auditor.py y los tests lo importan de
+# detective.
+from verificador_citas import (  # noqa: F401
+    verificar_citas, _normalizar_para_comparar, VERSION_PROTOCOLO,
+)
 from dotenv import load_dotenv
 
 # Cargo el .env de la carpeta si existe — así las claves no dependen de
@@ -490,10 +495,14 @@ Tu tarea:
 1. Identifica un catalizador NO OBVIO que el texto sugiera (algo que el mercado podría no estar valorando todavía)
 2. Construye una tesis de inversión breve (3-4 frases)
 3. Lista los 3-4 PUNTOS FUERTES y los 3-4 PUNTOS DÉBILES concretos del negocio según los documentos — este análisis lo estudiará un inversor humano con información adicional que tú no tienes, así que sé específico y útil, no genérico
-4. CITAS: para cada afirmación clave de tu tesis, incluye una cita literal corta (máximo 20 palabras) del texto MD&A, de los eventos 8-K o de los documentos 13D/G de arriba que la respalde. Copia el texto EXACTO, sin añadir referencias, fuentes ni corchetes al final, y sin combinar fragmentos de sitios distintos. Si no puedes citar el texto original, no hagas la afirmación.
+4. CITAS: para cada afirmación clave de tu tesis, incluye una cita corta (máximo 20 palabras) del texto MD&A, de los eventos 8-K o de los documentos 13D/G de arriba que la respalde.
+   - "cita_literal": copia el texto EXACTO, carácter por carácter, en el idioma original del documento (inglés). NO lo traduzcas, no uses "..." ni combines fragmentos de sitios distintos, y no añadas referencias, fuentes ni corchetes. Cita frases completas, no cifras sueltas.
+   - No cites los SCORES NUMÉRICOS de arriba: son cálculos nuestros, no texto de ningún documento. Para las compras de insiders sí puedes copiar la línea tal cual aparece en la lista.
+   - "cita_es": la traducción al español de esa misma cita, para el inversor que leerá el análisis.
+   Si no puedes citar el texto original, no hagas la afirmación.
 5. Da un veredicto preliminar de interés para investigación (NO es consejo de inversión): MUY_INTERESANTE, INTERESANTE, o NADA_INTERESANTE
 
-Responde ÚNICAMENTE con un JSON válido, en español, sin texto antes ni después, con esta estructura exacta:
+Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, redactado en español salvo el campo "cita_literal" (que va en el idioma original del documento), con esta estructura exacta:
 {{
   "catalizador_no_obvio": "string",
   "tesis_inversion": "string",
@@ -501,7 +510,7 @@ Responde ÚNICAMENTE con un JSON válido, en español, sin texto antes ni despu�
   "puntos_debiles": ["string", "string", "string"],
   "riesgos": ["string", "string"],
   "citas": [
-    {{"afirmacion": "string", "cita_literal": "string exacta del texto"}}
+    {{"afirmacion": "string en español", "cita_literal": "texto EXACTO del documento, sin traducir", "cita_es": "traducción al español de la cita"}}
   ],
   "veredicto_preliminar": "MUY_INTERESANTE|INTERESANTE|NADA_INTERESANTE"
 }}"""
@@ -545,13 +554,19 @@ def llamar_claude(prompt: str) -> str:
     Claude no tiene modo JSON forzado como Gemini: a veces envuelve la
     respuesta en una valla ```json. La quito aquí para que el caller
     reciba JSON limpio siempre.
+
+    max_tokens=4000: con 2000 el Auditor devolvía el JSON cortado en 3 de
+    10 llamadas (llm_calls registró tokens_salida == 2000 exacto en las
+    tres) y las respuestas buenas ya rondaban los 1.900. Solo pagas los
+    tokens que el modelo usa de verdad, así que subir el tope no encarece
+    las respuestas que ya cabían.
     """
     from anthropic import Anthropic
 
     cliente = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     respuesta = cliente.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=2000,
+        max_tokens=4000,
         messages=[{"role": "user", "content": prompt}],
     )
     texto = respuesta.content[0].text.strip()
@@ -641,86 +656,6 @@ def parsear_json_llm(texto: str) -> dict:
     return objeto
 
 
-def _normalizar_para_comparar(texto: str) -> str:
-    """
-    Normalizo antes de comparar: minúsculas, sin acentos, espacios
-    colapsados. El LLM puede citar con capitalización o espaciado
-    ligeramente distinto al original sin que eso sea "inventarse" nada.
-
-    Ojo con los apóstrofos: el recto (') sobrevive a la conversión a
-    ASCII, pero el tipográfico curvo (') no tiene equivalente ASCII y
-    desaparece con NFKD. Si el texto fuente usa uno y el LLM cita con
-    el otro (algo frecuentísimo — "Dave & Buster's" en el 10-Q real
-    suele llevar el curvo, y el LLM casi siempre escribe el recto),
-    uno de los dos se queda con el apóstrofo y el otro no, y una cita
-    perfectamente fiel falla la comparación por pura tipografía, no
-    por contenido inventado. Elimino explícitamente todas las variantes
-    de apóstrofo/comilla ANTES de la normalización Unicode, así los dos
-    textos reciben el mismo tratamiento sin importar qué tipografía use
-    cada uno.
-    """
-    for caracter in ["'", "’", "‘", '"', "“", "”"]:
-        texto = texto.replace(caracter, "")
-    texto = unicodedata.normalize("NFKD", texto).encode("ascii", "ignore").decode()
-    texto = texto.lower()
-    texto = re.sub(r"\s+", " ", texto)
-    return texto.strip()
-
-
-def verificar_citas(citas: list, texto_fuente: str) -> dict:
-    """
-    Compruebo, de forma determinista (sin otro LLM), si cada cita
-    literal que el Detective afirma haber sacado del texto existe de
-    verdad ahí. No confío en que el modelo se autoevalúe — comparo
-    directamente contra el texto_mda real.
-
-    Marco una cita como verificada si aparece casi textual en la fuente
-    (permito pequeñas diferencias de espaciado/acentos/mayúsculas, pero
-    no invención de contenido).
-    """
-    fuente_normalizada = _normalizar_para_comparar(texto_fuente)
-
-    resultados = []
-    verificadas = 0
-
-    for cita in citas:
-        cita_literal = cita.get("cita_literal", "")
-
-        # Algunos modelos (Claude sobre todo) añaden la referencia al
-        # final de la cita — "[8-K, 2026-07-07]" — como un académico
-        # educado. Esa coletilla no está en el texto fuente y hacía
-        # fallar citas perfectamente fieles. La recorto antes de
-        # comparar; el contenido de la cita sigue verificándose entero.
-        cita_literal = re.sub(r"(\s*\[[^\]]{0,120}\])+\s*$", "", cita_literal)
-
-        cita_normalizada = _normalizar_para_comparar(cita_literal)
-
-        # Cita vacía o demasiado corta no cuenta como verificable
-        if len(cita_normalizada) < 8:
-            resultados.append({**cita, "verificada": False, "motivo": "cita_demasiado_corta"})
-            continue
-
-        existe = cita_normalizada in fuente_normalizada
-        if existe:
-            verificadas += 1
-        resultados.append({**cita, "verificada": existe})
-
-    total = len(citas)
-    pct_verificadas = (verificadas / total * 100) if total > 0 else 0
-
-    # Si menos de la mitad de las citas son verificables, es una señal
-    # fuerte de que el modelo está alucinando contenido, no citándolo.
-    alucinacion_detectada = total > 0 and pct_verificadas < 50
-
-    return {
-        "citas_verificadas": verificadas,
-        "citas_totales": total,
-        "porcentaje_verificado": round(pct_verificadas, 1),
-        "alucinacion_detectada": alucinacion_detectada,
-        "detalle": resultados,
-    }
-
-
 def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función principal que ejecuta el análisis del Detective para un ticker y modelo dados. Devuelve un diccionario con el contexto, la respuesta del LLM y la verificación de citas.
     contexto = obtener_contexto_empresa(conn, ticker)
     if not contexto:
@@ -767,21 +702,29 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
         segundos=time.time() - t0, exito=True,
     )
 
+    # Marca de qué prompt y qué verificador produjeron esta fila: el
+    # orquestador re-analiza las que sean de un protocolo anterior.
+    respuesta_json["version_protocolo"] = VERSION_PROTOCOLO
+
     # Verifico contra el MD&A Y los eventos 8-K juntos: el prompt ofrece
     # los dos como fuente citable, así que la verificación tiene que
     # cubrir los dos o penalizaría citas legítimas del 8-K.
     verificacion = verificar_citas(
-        respuesta_json.get("citas", []), texto_fuente_citas(contexto)
+        respuesta_json.get("citas", []), texto_fuente_citas(contexto),
+        transacciones=contexto["transacciones"],
     )
 
     log.info(
         f"{ticker} ({modelo}): veredicto preliminar = "
         f"{respuesta_json.get('veredicto_preliminar')} | "
-        f"citas verificadas: {verificacion['citas_verificadas']}/{verificacion['citas_totales']} "
-        f"({verificacion['porcentaje_verificado']}%)"
+        f"citas soportadas: {verificacion['citas_soportadas']}/{verificacion['citas_totales']} "
+        f"({verificacion['porcentaje_soportado']}%), "
+        f"literales: {verificacion['citas_verificadas']} ({verificacion['porcentaje_verificado']}%)"
     )
     if verificacion["alucinacion_detectada"]:
-        log.warning(f"{ticker} ({modelo}): POSIBLE ALUCINACIÓN — menos del 50% de citas verificadas")
+        log.warning(f"{ticker} ({modelo}): POSIBLE ALUCINACIÓN — menos del 50% de citas con soporte en el texto")
+    elif verificacion["citas_debiles"]:
+        log.warning(f"{ticker} ({modelo}): citas débiles — entre el 50% y el 80% con soporte")
 
     return {
         "contexto": contexto,
@@ -823,7 +766,7 @@ def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict): #Fun
             nombre=contexto["nombre"],
             modelo=modelo,
             veredicto=veredicto,
-            citas_verificadas=verificacion["citas_verificadas"],
+            citas_verificadas=verificacion["citas_soportadas"],
             citas_totales=verificacion["citas_totales"],
             extra=resultado["respuesta_llm"].get("catalizador_no_obvio"),
         )

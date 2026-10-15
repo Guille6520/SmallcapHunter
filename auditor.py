@@ -38,7 +38,7 @@ from detective import (
     conectar_db, obtener_contexto_empresa, llamar_modelo,
     parsear_json_llm, verificar_citas, formatear_eventos_8k,
     formatear_senales_mercado, texto_fuente_citas, MAX_CARACTERES_MDA,
-    registrar_llamada_llm,
+    registrar_llamada_llm, VERSION_PROTOCOLO,
 )
 from notificador_telegram import notificar_analisis
 
@@ -66,39 +66,34 @@ def modelo_opuesto(modelo: str) -> str:
 
 def obtener_analisis_detective(conn, empresa_id: int, modelo_detective: str = None) -> list:
     """
-    Traigo los análisis del Detective ya guardados para esta empresa.
-    Los identifico por tener respuesta_llm no nulo y un veredicto real
-    (no las filas de puro scoring numérico, que tienen veredicto NULL).
+    Traigo el ÚLTIMO análisis del Detective de cada modelo para esta
+    empresa. Los identifico por la firma del JSON (veredicto_preliminar):
+    antes filtraba solo por "respuesta_llm no nulo", y las filas del
+    propio Auditor también lo cumplen, así que audité auditorías. Y al
+    traer todas las filas históricas en vez de la última de cada modelo,
+    gastaba llamadas en análisis ya reemplazados por otros más nuevos.
+
+    Sin modelo concreto solo considero claude y gemini: los análisis
+    antiguos de "groq" solo se auditan si se piden explícitamente.
     Si ya existe una auditoría de este mismo par (Detective, Auditor),
-    la excluyo — no quiero auditar dos veces el mismo análisis con el
-    mismo auditor sin querer.
+    ejecutar_auditor la salta con ya_auditado_por.
     """
     cur = conn.cursor()
     try:
-        if modelo_detective:
-            cur.execute(
-                """
-                select id, modelo_llm, respuesta_llm, verificacion_citas
-                from auditorias
-                where empresa_id = %s and modelo_llm = %s
-                  and respuesta_llm is not null
-                  and veredicto is not null
-                order by fecha_analisis desc limit 1
-                """,
-                (empresa_id, modelo_detective)
-            )
-        else:
-            cur.execute(
-                """
-                select id, modelo_llm, respuesta_llm, verificacion_citas
-                from auditorias
-                where empresa_id = %s
-                  and respuesta_llm is not null
-                  and veredicto is not null
-                order by fecha_analisis desc
-                """,
-                (empresa_id,)
-            )
+        modelos = [modelo_detective] if modelo_detective else ["claude", "gemini"]
+        cur.execute(
+            """
+            select distinct on (modelo_llm)
+                   id, modelo_llm, respuesta_llm, verificacion_citas
+            from auditorias
+            where empresa_id = %s
+              and modelo_llm = any(%s)
+              and respuesta_llm ? 'veredicto_preliminar'
+              and veredicto is not null
+            order by modelo_llm, fecha_analisis desc
+            """,
+            (empresa_id, modelos)
+        )
         return cur.fetchall()
     finally:
         cur.close()
@@ -160,17 +155,17 @@ Tu tarea:
 1. ¿La tesis del Detective se sostiene releyendo el texto? ¿Hay algo que interpretó de forma demasiado generosa, o demasiado conservadora?
 2. ¿Hay algún riesgo importante en el texto, en los eventos 8-K o en las señales de mercado (short interest, shelf, 13D/G) que el Detective NO mencionó?
 3. ¿Hay algún catalizador, fortaleza o dato positivo en el texto, en los eventos 8-K o en las señales de mercado que el Detective INFRAVALORÓ o no mencionó? Sé igual de riguroso buscando esto que buscando riesgos — un auditor que solo busca problemas no es un auditor, es un pesimista, y tu trabajo es corregir al Detective en cualquier dirección, no solo hacia abajo.
-4. CITAS: si afirmas algo nuevo que el Detective no dijo (sea riesgo o fortaleza), cita literalmente (máx 20 palabras) el texto que lo respalda. Copia el texto EXACTO, sin añadir referencias, fuentes ni corchetes al final. Si no puedes citarlo, no lo afirmes.
+4. CITAS: si afirmas algo nuevo que el Detective no dijo (sea riesgo o fortaleza), cita (máx 20 palabras) el texto que lo respalda. En "cita_literal" copia el texto EXACTO, carácter por carácter, en el idioma original del documento (inglés): NO lo traduzcas, no uses "..." ni combines fragmentos de sitios distintos, y no añadas referencias, fuentes ni corchetes. En "cita_es" pon la traducción al español de esa misma cita. Si no puedes citarlo, no lo afirmes.
 5. Da tu propio veredicto de interés, independiente del preliminar (NO es consejo de inversión): MUY_INTERESANTE, INTERESANTE, o NADA_INTERESANTE
 6. Indica explícitamente si tu veredicto CONFIRMA, MEJORA o EMPEORA el veredicto preliminar del Detective, y por qué
 
-Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, con esta estructura exacta:
+Responde ÚNICAMENTE con un JSON válido, sin texto antes ni después, redactado en español salvo el campo "cita_literal" (que va en el idioma original del documento), con esta estructura exacta:
 {{
   "tesis_se_sostiene": true o false,
   "riesgos_omitidos_por_detective": ["string"],
   "fortalezas_omitidas_por_detective": ["string"],
   "citas_nuevas": [
-    {{"afirmacion": "string", "cita_literal": "string exacta del texto"}}
+    {{"afirmacion": "string en español", "cita_literal": "texto EXACTO del documento, sin traducir", "cita_es": "traducción al español de la cita"}}
   ],
   "veredicto_auditor": "MUY_INTERESANTE|INTERESANTE|NADA_INTERESANTE",
   "relacion_con_veredicto_detective": "CONFIRMA|MEJORA|EMPEORA",
@@ -242,9 +237,12 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
             segundos=time.time() - t0, exito=True,
         )
 
+        respuesta_json["version_protocolo"] = VERSION_PROTOCOLO
+
         # Misma fuente ampliada que el Detective: MD&A + eventos 8-K.
         verificacion = verificar_citas(
-            respuesta_json.get("citas_nuevas", []), texto_fuente_citas(contexto)
+            respuesta_json.get("citas_nuevas", []), texto_fuente_citas(contexto),
+            transacciones=contexto["transacciones"],
         )
 
         veredicto_final = respuesta_json.get("veredicto_auditor", "INTERESANTE")
@@ -255,7 +253,7 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
             f"{ticker}: auditoría de {modelo_auditor} sobre {modelo_original} — "
             f"{respuesta_json.get('relacion_con_veredicto_detective')} "
             f"(veredicto auditor: {veredicto_final}) | "
-            f"citas nuevas verificadas: {verificacion['citas_verificadas']}/{verificacion['citas_totales']}"
+            f"citas nuevas con soporte: {verificacion['citas_soportadas']}/{verificacion['citas_totales']}"
         )
 
         respuesta_json["detective_auditoria_id"] = detective_id
@@ -301,7 +299,7 @@ def guardar_resultado_auditor(conn, resultado: dict):
             nombre=resultado["nombre"],
             modelo=resultado["modelo_auditor"],
             veredicto=resultado["veredicto_final"],
-            citas_verificadas=verificacion["citas_verificadas"],
+            citas_verificadas=verificacion["citas_soportadas"],
             citas_totales=verificacion["citas_totales"],
             extra=f"{relacion} el veredicto del Detective" if relacion else None,
         )

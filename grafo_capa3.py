@@ -183,11 +183,14 @@ def main():
     parser.add_argument("--ticker", required=True)
     parser.add_argument(
         "--modelos", default=None,
-        help="Coma-separado: claude,gemini. Por defecto los dos.",
+        help="Coma-separado: claude,gemini. Por defecto los dos. "
+             "Cadena vacía (\"\") = ningún Detective, solo el Auditor sobre "
+             "lo que ya esté guardado (reintento de auditorías pendientes).",
     )
     args = parser.parse_args()
 
-    modelos = args.modelos.split(",") if args.modelos else None
+    # None (flag ausente) = los dos; "" = ninguno, a propósito.
+    modelos = None if args.modelos is None else [m for m in args.modelos.split(",") if m]
 
     conn = detective.conectar_db()
     try:

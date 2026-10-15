@@ -60,6 +60,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from notificador_telegram import enviar_telegram
+from verificador_citas import VERSION_PROTOCOLO
 
 logging.basicConfig(
     level=logging.INFO,
@@ -86,6 +87,12 @@ LIMITE_MERCADO_PASADA_NORMAL = 800
 # Nemotron) no es cuota agotada: en la pasada del 24-sep dos fallos
 # sueltos sacaron a los dos modelos y 6 de 10 empresas quedaron sin tocar.
 FALLOS_SEGUIDOS_PARA_RETIRAR = 3
+
+# Reintentos de una auditoría que no llegó a guardarse: tras este número
+# de llamadas fallidas del Auditor sobre un mismo ticker en los últimos 7
+# días, dejo de reintentar. Sin tope, un ticker cuyo JSON sale siempre
+# roto (o cuyo texto desborda el contexto) gastaría llamadas en cada pasada.
+MAX_FALLOS_AUDITORIA_7D = 3
 
 
 def conectar_db():
@@ -211,6 +218,11 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
     (veredicto_preliminar) — así no los confundo con las filas de
     scoring (veredicto NULL) ni con las del Auditor.
 
+    También le toca si su último análisis es de un protocolo anterior
+    (prompt y verificador de citas más antiguos, ver VERSION_PROTOCOLO):
+    las filas sin marca cuentan como versión 1. Las filas viejas no se
+    borran -- el análisis nuevo se guarda al lado y pasa a ser el último.
+
     Devuelvo [(empresa_id, ticker, score, [modelos_pendientes]), ...].
     """
     cur = conn.cursor()
@@ -218,11 +230,14 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
         cur.execute(
             """
             with detectives as (
-                select empresa_id, modelo_llm, max(fecha_analisis) as ultima
+                select distinct on (empresa_id, modelo_llm)
+                       empresa_id, modelo_llm,
+                       fecha_analisis as ultima,
+                       coalesce((respuesta_llm->>'version_protocolo')::int, 1) as version
                 from auditorias
                 where veredicto is not null
                   and respuesta_llm ? 'veredicto_preliminar'
-                group by empresa_id, modelo_llm
+                order by empresa_id, modelo_llm, fecha_analisis desc
             ),
             candidatas as (
                 select e.id, e.ticker, max(a.score_total) as score
@@ -239,6 +254,7 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
             left join detectives d
               on d.empresa_id = c.id and d.modelo_llm = m.modelo
             where d.ultima is null
+               or d.version < %s
                or exists (select 1 from eventos_8k ev
                           where ev.empresa_id = c.id
                             and ev.fecha_registro > d.ultima)
@@ -248,7 +264,7 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
                             and it.fecha_registro > d.ultima)
             order by c.score desc, c.id
             """,
-            (corte,),
+            (corte, VERSION_PROTOCOLO),
         )
         filas = cur.fetchall()
     finally:
@@ -266,6 +282,123 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
             resultado.append((empresa_id, ticker, score, []))
         resultado[indice[empresa_id]][3].append(modelo)
     return resultado
+
+
+def auditorias_pendientes(conn, corte: int, limite: int) -> list:
+    """
+    Tickers cuyo último análisis de algún Detective sigue sin auditoría del
+    modelo opuesto. Existen porque la auditoría puede fallar sola (JSON
+    cortado, 503, cuota) después de que el Detective ya guardó su análisis,
+    y la condición de disparo de empresas_que_necesitan_analisis solo mira
+    si falta el Detective: sin esto, esa auditoría quedaba sin hacer para
+    siempre (el 14-oct quedaron 11 así).
+
+    Solo candidatas por encima del corte, solo análisis del protocolo
+    vigente (auditar una fila que la próxima pasada va a rehacer es tirar
+    la llamada), y solo si el Auditor no ha fallado ya
+    MAX_FALLOS_AUDITORIA_7D veces con ese ticker en 7 días.
+
+    Devuelvo [(ticker, [modelos_de_detective_sin_auditar]), ...].
+    """
+    cur = conn.cursor()
+    try:
+        cur.execute(
+            """
+            with ultimos as (
+                select distinct on (empresa_id, modelo_llm)
+                       id, empresa_id, modelo_llm,
+                       coalesce((respuesta_llm->>'version_protocolo')::int, 1) as version
+                from auditorias
+                where veredicto is not null
+                  and respuesta_llm ? 'veredicto_preliminar'
+                  and modelo_llm in ('claude', 'gemini')
+                order by empresa_id, modelo_llm, fecha_analisis desc
+            ),
+            candidatas as (
+                select e.id, e.ticker, max(a.score_total) as score
+                from empresas e
+                join auditorias a
+                  on a.empresa_id = e.id
+                 and a.veredicto is null
+                 and a.score_total >= %s
+                group by e.id, e.ticker
+            )
+            select c.ticker, u.modelo_llm
+            from candidatas c
+            join ultimos u on u.empresa_id = c.id
+            where u.version >= %s
+              and not exists (
+                      select 1 from auditorias au
+                      where au.modelo_llm = case u.modelo_llm
+                                              when 'claude' then 'gemini'
+                                              else 'claude' end
+                        and au.respuesta_llm->>'detective_auditoria_id' = u.id::text
+                  )
+              and (select count(*) from llm_calls l
+                   where l.origen = 'auditor' and not l.exito
+                     and l.ticker = c.ticker
+                     and l.fecha > now() - interval '7 days') < %s
+            order by c.score desc, c.id, u.modelo_llm
+            """,
+            (corte, VERSION_PROTOCOLO, MAX_FALLOS_AUDITORIA_7D),
+        )
+        filas = cur.fetchall()
+    finally:
+        cur.close()
+
+    por_ticker = {}
+    for ticker, modelo in filas:
+        if ticker not in por_ticker and len(por_ticker) >= limite:
+            continue
+        por_ticker.setdefault(ticker, []).append(modelo)
+    return list(por_ticker.items())
+
+
+def fase_auditorias(config: dict) -> dict:
+    """
+    Reintenta las auditorías que se quedaron sin hacer (ver
+    auditorias_pendientes). Lanza el grafo SIN Detectives (--modelos "")
+    para que solo corra el Auditor sobre lo ya guardado: no se paga otro
+    análisis para conseguir una auditoría.
+
+    Si el Auditor no guarda nada FALLOS_SEGUIDOS_PARA_RETIRAR veces
+    seguidas, paro la fase: lo normal es cuota agotada o proveedor caído,
+    y seguir solo repetiría el mismo error.
+    """
+    conn = conectar_db()
+    try:
+        pendientes = auditorias_pendientes(conn, config["corte"], config["max_analisis"])
+    finally:
+        conn.close()
+
+    if not pendientes:
+        log.info("Fase de auditorías: ninguna auditoría pendiente")
+        return {"auditadas": 0, "fallos": 0}
+
+    log.info(f"Fase de auditorías: {len(pendientes)} empresas con auditorías pendientes")
+    auditadas, fallos, seguidos = 0, 0, 0
+
+    for ticker, modelos_detective in pendientes:
+        log.info(f"--- Auditando {ticker} (análisis sin auditar de: {modelos_detective}) ---")
+        exitos = ejecutar_grafo_paso(ticker, [])
+        guardadas = exitos.get("auditorias_guardadas", 0)
+        time.sleep(config["pausa_llm"])
+
+        if guardadas:
+            auditadas += guardadas
+            seguidos = 0
+            continue
+
+        fallos += 1
+        seguidos += 1
+        if seguidos >= FALLOS_SEGUIDOS_PARA_RETIRAR:
+            log.warning(
+                f"{seguidos} empresas seguidas sin auditoría guardada — corto la fase "
+                "(probable cuota agotada o caída del proveedor). La siguiente pasada la retomará."
+            )
+            break
+
+    return {"auditadas": auditadas, "fallos": fallos}
 
 
 def fase_agentes(config: dict) -> dict:
@@ -398,12 +531,14 @@ def una_pasada(args) -> None:
                 return
 
     resultado = fase_agentes(config)
+    auditorias = fase_auditorias(config)
 
     minutos = (datetime.now() - inicio).total_seconds() / 60
     resumen = (
         f"🤖 SmallCap Hunter — pasada completa en {minutos:.0f} min\n"
         f"Empresas analizadas por los agentes: {resultado['analizadas']}"
         + (f" (con fallos: {resultado['fallos']})" if resultado["fallos"] else "")
+        + (f"\nAuditorías recuperadas: {auditorias['auditadas']}" if auditorias["auditadas"] else "")
     )
     log.info(resumen.replace("🤖 ", ""))
     # El detalle de cada veredicto ya llegó por Telegram desde los
