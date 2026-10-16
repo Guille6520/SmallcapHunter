@@ -293,10 +293,20 @@ def vista_panorama():
             count(*)                                            as total,
             count(*) FILTER (where activa)                      as activas,
             count(*) FILTER (where estado = 'filtros_ok')       as filtros_ok,
-            count(*) FILTER (where estado = 'scoring_ok')       as scoring_ok,
-            count(*) FILTER (where estado = 'analizada')        as analizadas
+            count(*) FILTER (where estado = 'scoring_ok')       as scoring_ok
         from empresas
     """).iloc[0]
+
+    # Las cuento desde los análisis y no desde empresas.estado: ese valor
+    # ('analizada') está en el esquema pero ningún paso del pipeline lo
+    # escribe nunca, así que la métrica salía siempre en 0.
+    analizadas = query_df("""
+        select count(distinct a.empresa_id) as n
+        from auditorias a join empresas e on e.id = a.empresa_id
+        where e.activa
+          and a.veredicto is not null
+          and a.respuesta_llm ? 'veredicto_preliminar'
+    """).iloc[0]["n"]
 
     candidatas_llm = query_df(
         """
@@ -314,7 +324,7 @@ def vista_panorama():
     c2.metric("Activas", f"{totales.activas:,}")
     c3.metric("Pasaron Capa 1", f"{totales.filtros_ok + totales.scoring_ok:,}")
     c4.metric(f"Candidatas LLM (≥{corte}/40)", f"{candidatas_llm:,}")
-    c5.metric("Analizadas por agentes", f"{totales.analizadas:,}")
+    c5.metric("Analizadas por agentes", f"{analizadas:,}")
     c6.metric("Muy interesantes", f"{seguras:,}")
 
     st.divider()

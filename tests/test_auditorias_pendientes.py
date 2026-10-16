@@ -62,6 +62,7 @@ def test_auditorias_pendientes_solo_protocolo_vigente_y_con_tope_de_fallos():
     assert "u.version >=" in sql, "no auditar análisis que la próxima pasada va a rehacer"
     assert "respuesta_llm ? 'veredicto_preliminar'" in sql, "solo filas de Detective, no de Auditor"
     assert "origen = 'auditor'" in sql and "not l.exito" in sql
+    assert "not like '429" in sql, "un 429 de cuota no debe agotar el tope de reintentos del ticker"
 
 
 def test_los_detectives_de_protocolo_antiguo_cuentan_como_pendientes():

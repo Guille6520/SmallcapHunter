@@ -555,18 +555,20 @@ def llamar_claude(prompt: str) -> str:
     respuesta en una valla ```json. La quito aquí para que el caller
     reciba JSON limpio siempre.
 
-    max_tokens=4000: con 2000 el Auditor devolvía el JSON cortado en 3 de
-    10 llamadas (llm_calls registró tokens_salida == 2000 exacto en las
-    tres) y las respuestas buenas ya rondaban los 1.900. Solo pagas los
-    tokens que el modelo usa de verdad, así que subir el tope no encarece
-    las respuestas que ya cabían.
+    max_tokens=8000: con 2000 el Auditor devolvía el JSON cortado en 3 de
+    10 llamadas, y con 4000 volvió a pasar en 2 (llm_calls registró
+    tokens_salida == tope exacto en todas). Desde que las citas llevan
+    también su traducción (cita_es) la media del Detective es ~3.000
+    tokens y el máximo tocó 4000. Solo pagas los tokens que el modelo usa
+    de verdad, así que subir el tope no encarece las respuestas que ya
+    cabían.
     """
     from anthropic import Anthropic
 
     cliente = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
     respuesta = cliente.messages.create(
         model="claude-haiku-4-5-20251001",
-        max_tokens=4000,
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}],
     )
     texto = respuesta.content[0].text.strip()

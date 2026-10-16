@@ -296,7 +296,9 @@ def auditorias_pendientes(conn, corte: int, limite: int) -> list:
     Solo candidatas por encima del corte, solo análisis del protocolo
     vigente (auditar una fila que la próxima pasada va a rehacer es tirar
     la llamada), y solo si el Auditor no ha fallado ya
-    MAX_FALLOS_AUDITORIA_7D veces con ese ticker en 7 días.
+    MAX_FALLOS_AUDITORIA_7D veces con ese ticker en 7 días. Los 429 de
+    cuota no cuentan para ese tope: no son culpa del ticker, y contarlos
+    lo dejaría una semana sin reintentos por haber agotado la cuota diaria.
 
     Devuelvo [(ticker, [modelos_de_detective_sin_auditar]), ...].
     """
@@ -336,6 +338,7 @@ def auditorias_pendientes(conn, corte: int, limite: int) -> list:
                   )
               and (select count(*) from llm_calls l
                    where l.origen = 'auditor' and not l.exito
+                     and coalesce(l.tipo_error, '') not like '429%%'
                      and l.ticker = c.ticker
                      and l.fecha > now() - interval '7 days') < %s
             order by c.score desc, c.id, u.modelo_llm
