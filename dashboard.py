@@ -32,6 +32,7 @@ import json
 import time
 import logging
 
+import altair as alt
 import pandas as pd
 import psycopg2
 import streamlit as st
@@ -510,11 +511,11 @@ def _detalle_candidata(conn, r, con_score: bool):
         cur.close()
 
         if resumen_cacheado:
-            st.write(resumen_cacheado)
+            st.markdown(sin_latex(resumen_cacheado))
         elif st.button("Generar resumen del negocio", key=f"resumen_{empresa_id}"):
             contexto = obtener_contexto_empresa(conn, ticker)
             with st.spinner("Generando..."):
-                st.write(obtener_resumen_negocio(conn, empresa_id, contexto))
+                st.markdown(sin_latex(obtener_resumen_negocio(conn, empresa_id, contexto)))
         else:
             st.caption("Pulsa el botón para generarlo (una sola vez, queda guardado).")
 
@@ -728,22 +729,59 @@ def vista_empresa(ticker: str):
                 unsafe_allow_html=True,
             )
             if es_auditor:
-                st.write(resp.get("justificacion", ""))
+                st.markdown(sin_latex(resp.get("justificacion", "")))
                 if resp.get("riesgos_omitidos_por_detective"):
-                    st.write("Riesgos que el Detective no vio: " +
-                             "; ".join(resp["riesgos_omitidos_por_detective"]))
+                    st.markdown(sin_latex("Riesgos que el Detective no vio: " +
+                             "; ".join(resp["riesgos_omitidos_por_detective"])))
                 if resp.get("fortalezas_omitidas_por_detective"):
-                    st.write("Fortalezas que el Detective no vio: " +
-                             "; ".join(resp["fortalezas_omitidas_por_detective"]))
+                    st.markdown(sin_latex("Fortalezas que el Detective no vio: " +
+                             "; ".join(resp["fortalezas_omitidas_por_detective"])))
             else:
                 if resp.get("catalizador_no_obvio"):
-                    st.write(f"**Catalizador:** {resp['catalizador_no_obvio']}")
+                    st.markdown(sin_latex(f"**Catalizador:** {resp['catalizador_no_obvio']}"))
                 if resp.get("tesis_inversion"):
-                    st.write(f"**Tesis:** {resp['tesis_inversion']}")
+                    st.markdown(sin_latex(f"**Tesis:** {resp['tesis_inversion']}"))
                 if resp.get("riesgos"):
-                    st.write("**Riesgos:** " + "; ".join(resp["riesgos"]))
+                    st.markdown(sin_latex("**Riesgos:** " + "; ".join(resp["riesgos"])))
 
             mostrar_citas(resp, verif)
+
+
+def sin_latex(texto: str) -> str:
+    """Streamlit lee el $ como LaTeX: "$1.2M ... $3M" se pintaba como una
+    fórmula en cursiva gris. Lo escapo en todo texto que viene de un modelo."""
+    return str(texto).replace("$", r"\$")
+
+
+# Un color fijo por modelo en todos los gráficos (el color sigue a la entidad,
+# no a su posición). Son los dos primeros del orden categórico validado en
+# daltonismo; groq es histórico y va en gris para que no compita.
+COLORES_MODELO = {"claude": "#2a78d6", "gemini": "#eb6834", "groq": "#9a9892"}
+COLOR_CON_SOPORTE = "#1baf7a"
+COLOR_LITERAL = "#9a9892"
+COLORES_RELACION = {"MEJORA": "#1baf7a", "CONFIRMA": "#9a9892", "EMPEORA": "#e34948"}
+
+
+def _estilo(grafico: alt.Chart, alto: int = None) -> alt.Chart:
+    """Estilo común: sin marco, cuadrícula casi invisible y ejes en un gris
+    medio que se lee igual con el tema claro y el oscuro. Un gráfico
+    facetado no admite height en la raíz: ese se lo pongo yo por dentro."""
+    if alto:
+        grafico = grafico.properties(height=alto)
+    return (
+        grafico
+        .configure_view(stroke=None)
+        .configure_axis(
+            labelColor="#8a8984", titleColor="#8a8984", domainColor="#8a8984",
+            tickColor="#8a8984", gridColor="#8a8984", gridOpacity=0.22, labelFontSize=12,
+        )
+        .configure_legend(labelColor="#8a8984", titleColor="#8a8984", labelFontSize=12, symbolType="square")
+    )
+
+
+def mostrar_grafico(grafico: alt.Chart, alto: int = 240):
+    """alto=None para un gráfico facetado (lleva su altura dentro)."""
+    st.altair_chart(_estilo(grafico, alto), use_container_width=True, theme=None)
 
 
 def texto_citas_verificadas(verif: dict) -> str:
@@ -785,10 +823,10 @@ def mostrar_citas(resp: dict, verif: dict):
             etiqueta = ETIQUETA_TIPO_CITA.get(d.get("tipo"), "✅ verificada" if d.get("verificada") else "❌ no verificada")
             # El $ lo interpreta Streamlit como LaTeX ("$1.2M ... $3M" se
             # pintaría como una fórmula), así que lo escapo.
-            st.markdown(f"**{d.get('afirmacion', '')}** — {etiqueta}".replace("$", r"\$"))
-            st.markdown(f"> {d.get('cita_literal', '')}".replace("$", r"\$"))
+            st.markdown(sin_latex(f"**{d.get('afirmacion', '')}** — {etiqueta}"))
+            st.markdown(sin_latex(f"> {d.get('cita_literal', '')}"))
             if d.get("cita_es"):
-                st.caption(f"Traducción (del modelo, sin verificar): {d['cita_es']}".replace("$", r"\$"))
+                st.caption(sin_latex(f"Traducción (del modelo, sin verificar): {d['cita_es']}"))
 
 
 def vista_observabilidad():
@@ -865,16 +903,40 @@ def vista_observabilidad():
 
     with der:
         st.markdown("**Gasto diario**")
+        # Un día sin llamadas es un día de 0 $, no un día que no existe: con
+        # la serie incompleta el gráfico unía dos puntos lejanos con una
+        # diagonal y parecía un gasto que crece de forma constante.
         diario = query_df("""
-            select date_trunc('day', fecha)::date as dia,
-                   coalesce(sum(coste_estimado_usd), 0) as coste
-            from llm_calls
-            where fecha >= now() - interval '30 days'
-            group by dia order by dia
+            select d::date as dia, m.modelo,
+                   coalesce(sum(l.coste_estimado_usd), 0) as coste
+            from generate_series(current_date - 29, current_date, interval '1 day') d
+            cross join (select modelo from llm_calls
+                        where fecha >= now() - interval '30 days'
+                        group by modelo
+                        having coalesce(sum(coste_estimado_usd), 0) > 0) m
+            left join llm_calls l
+              on l.modelo = m.modelo and l.fecha::date = d::date
+            group by 1, 2 order by 1, 2
         """)
         if not diario.empty:
             diario["coste"] = diario["coste"].astype(float)
-            st.line_chart(diario.set_index("dia")["coste"])
+            con_coste = list(diario["modelo"].unique())
+            mostrar_grafico(
+                alt.Chart(diario).mark_bar(size=8, cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                    x=alt.X("dia:T", timeUnit="yearmonthdate", title=None,
+                            axis=alt.Axis(format="%d %b", labelAngle=0, tickCount=6)),
+                    y=alt.Y("coste:Q", title="USD por día", axis=alt.Axis(format="$.2f")),
+                    color=alt.Color(
+                        "modelo:N", title=None,
+                        scale=alt.Scale(domain=con_coste, range=[COLORES_MODELO.get(m, "#9a9892") for m in con_coste]),
+                        legend=alt.Legend(orient="top"),
+                    ),
+                    tooltip=[alt.Tooltip("dia:T", title="día", format="%d %b"),
+                             alt.Tooltip("modelo:N"),
+                             alt.Tooltip("coste:Q", title="USD", format="$.3f")],
+                )
+            )
+            st.caption("Solo los modelos con coste: Gemini va en el tier gratuito.")
         else:
             st.caption("Sin coste registrado todavía (p.ej. si solo se ha usado Gemini gratis).")
 
@@ -966,20 +1028,46 @@ def bloque_calidad():
     izq, der = st.columns(2)
 
     with izq:
-        st.markdown("**% de citas literales por semana**")
-        semanal = query_df("""
-            select date_trunc('week', fecha_analisis)::date as semana,
-                   modelo_llm as modelo,
-                   round(avg((verificacion_citas->>'porcentaje_verificado')::numeric), 0)::float as pct_citas
-            from auditorias
-            where veredicto is not null
-              and respuesta_llm ? 'veredicto_preliminar'
-              and verificacion_citas is not null
-            group by 1, 2
-            order by 1, 2
-        """)
-        if not semanal.empty:
-            st.line_chart(semanal.pivot(index="semana", columns="modelo", values="pct_citas"))
+        st.markdown("**Citas por modelo y protocolo**")
+        # Claude y Gemini, protocolo 1 (anterior) frente al 2 (actual). Los
+        # groq históricos no se dibujan: son de otra época y de otro prompt.
+        # El protocolo 1 no tiene "% con soporte" (el verificador nuevo no
+        # existía), así que ahí solo hay barra de literales.
+        datos = calidad[calidad["modelo"].isin(["claude", "gemini"])].melt(
+            id_vars=["modelo", "protocolo"], value_vars=["pct_literal", "pct_soportado"],
+            var_name="metrica", value_name="pct",
+        ).dropna(subset=["pct"])
+        datos["metrica"] = datos["metrica"].map(
+            {"pct_literal": "literales", "pct_soportado": "con soporte"}
+        )
+        datos["protocolo"] = "protocolo " + datos["protocolo"].astype(str)
+        if not datos.empty:
+            base = alt.Chart(datos).encode(
+                x=alt.X("protocolo:N", title=None, axis=alt.Axis(labelAngle=0)),
+                xOffset=alt.XOffset("metrica:N"),
+                y=alt.Y("pct:Q", title="% de citas", scale=alt.Scale(domain=[0, 100])),
+                color=alt.Color(
+                    "metrica:N", title=None,
+                    scale=alt.Scale(domain=["literales", "con soporte"],
+                                    range=[COLOR_LITERAL, COLOR_CON_SOPORTE]),
+                    legend=alt.Legend(orient="top"),
+                ),
+            )
+            barras = base.mark_bar(size=22, cornerRadiusTopLeft=3, cornerRadiusTopRight=3).encode(
+                tooltip=[alt.Tooltip("modelo:N"), alt.Tooltip("protocolo:N"),
+                         alt.Tooltip("metrica:N", title="citas"),
+                         alt.Tooltip("pct:Q", title="%", format=".0f")],
+            )
+            etiquetas = base.mark_text(dy=-7, fontSize=12, color="#8a8984").encode(
+                text=alt.Text("pct:Q", format=".0f"),
+            )
+            mostrar_grafico(
+                alt.layer(barras, etiquetas).properties(height=200, width=150).facet(
+                    column=alt.Column("modelo:N", title=None,
+                                      header=alt.Header(labelFontSize=13, labelColor="#8a8984")),
+                ),
+                alto=None,
+            )
 
     with der:
         st.markdown("**Qué hace el Auditor con el veredicto del Detective**")
@@ -992,13 +1080,34 @@ def bloque_calidad():
             group by 1, 2
         """)
         if not relaciones.empty:
-            st.dataframe(
-                relaciones.pivot_table(
-                    index="auditor", columns="relacion", values="n",
-                    aggfunc="sum", fill_value=0,
+            # Apilo yo las barras (x0..x1) para poder centrar el número de cada
+            # tramo: dejar que Altair apile el texto lo pegaba al borde.
+            orden = list(COLORES_RELACION)
+            relaciones["n"] = relaciones["n"].astype(int)
+            relaciones["relacion"] = pd.Categorical(relaciones["relacion"], categories=orden, ordered=True)
+            relaciones = relaciones.sort_values(["auditor", "relacion"])
+            relaciones["x1"] = relaciones.groupby("auditor")["n"].cumsum()
+            relaciones["x0"] = relaciones["x1"] - relaciones["n"]
+            relaciones["centro"] = (relaciones["x0"] + relaciones["x1"]) / 2
+            relaciones["relacion"] = relaciones["relacion"].astype(str)
+            base = alt.Chart(relaciones).encode(
+                y=alt.Y("auditor:N", title=None, sort=["claude", "gemini", "groq"]),
+                color=alt.Color(
+                    "relacion:N", title=None,
+                    scale=alt.Scale(domain=orden, range=list(COLORES_RELACION.values())),
+                    legend=alt.Legend(orient="top"),
                 ),
-                use_container_width=True,
             )
+            barras = base.mark_bar(size=26, stroke="white", strokeWidth=2).encode(
+                x=alt.X("x0:Q", title="auditorías"), x2="x1:Q",
+                tooltip=[alt.Tooltip("auditor:N"), alt.Tooltip("relacion:N"), alt.Tooltip("n:Q", title="auditorías")],
+            )
+            # color=alt.value: sin esto el texto hereda el color de su barra y no se ve
+            numeros = base.mark_text(fontSize=13, fontWeight="bold").encode(
+                x=alt.X("centro:Q"), color=alt.value("white"),
+                text=alt.condition(alt.datum.n >= 3, alt.Text("n:Q"), alt.value("")),
+            )
+            mostrar_grafico(alt.layer(barras, numeros), alto=150)
 
         acuerdo = query_df("""
             with ult as (
@@ -1047,13 +1156,13 @@ def vista_chat(ticker: str, modelo: str):
 
     for msg in st.session_state[clave]:
         with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+            st.markdown(sin_latex(msg["content"]))
 
     pregunta = st.chat_input("Pregunta lo que quieras sobre esta empresa...")
     if pregunta:
         st.session_state[clave].append({"role": "user", "content": pregunta})
         with st.chat_message("user"):
-            st.write(pregunta)
+            st.markdown(sin_latex(pregunta))
 
         mensajes = (
             [{"role": "system", "content": sistema}]
@@ -1076,7 +1185,7 @@ def vista_chat(ticker: str, modelo: str):
                         segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
                     )
                     respuesta = f"Error llamando a {modelo}: {e}"
-            st.write(respuesta)
+            st.markdown(sin_latex(respuesta))
         st.session_state[clave].append({"role": "assistant", "content": respuesta})
 
 
