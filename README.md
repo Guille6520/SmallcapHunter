@@ -4,6 +4,8 @@
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![Demostración del dashboard: panorama, ficha con citas en inglés y su traducción, chat y calidad por modelo](docs/demo.gif)
+
 Sistema autónomo de detección de small caps americanas en fase pre-explosiva.
 Busca empresas que muestran el patrón que tuvieron Amazon, Netflix o Tesla
 6-12 trimestres antes de despegar: aceleración del crecimiento, mejora de
@@ -26,22 +28,6 @@ Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
 ## Arquitectura
 
 ![Cómo decide SmallCap Hunter: tablero de investigación desde la evidencia pública de la SEC hasta el veredicto final](docs/architecture.svg)
-
----
-
-## Capturas
-
-**Panorama** — el embudo completo en un vistazo: cuántas empresas hay en cada capa y los últimos veredictos de los agentes.
-
-![Panorama del dashboard: métricas del embudo y ranking de Capa 2](docs/screenshots/panorama.webp)
-
-**Ficha de empresa** — scores, fundamentales, compras de insiders y el historial completo de análisis del Detective y el Auditor, con citas verificadas.
-
-![Ficha de empresa BUILD-A-BEAR WORKSHOP con scores, gráficos y análisis de los agentes](docs/screenshots/empresa.webp)
-
-**Chat** — pregunta libre sobre cualquier candidata, con el mismo contexto que ve el Detective.
-
-![Chat sobre una empresa respondiendo cuántos insiders compraron en los últimos 3 meses](docs/screenshots/chat.webp)
 
 ---
 
