@@ -542,6 +542,18 @@ create table backtests (
 );
 
 
+-- Precios de cierre (ajustados) de las empresas con veredicto y del IWM,
+-- para seguimiento_senales.py: qué hizo el precio después de cada veredicto.
+-- Esta tabla la crea sola seguimiento_senales.py (create table if not
+-- exists); está aquí para que una instalación nueva la tenga desde el inicio.
+create table precios_seguimiento (
+    ticker  varchar(12)   not null,
+    fecha   date          not null,
+    cierre  decimal(14,4) not null,
+    primary key (ticker, fecha)
+);
+
+
 -- Parámetros del sistema. Los guardo aquí para no tener constantes
 -- hardcodeadas en Python y poder cambiarlos sin tocar código.
 create table configuracion (

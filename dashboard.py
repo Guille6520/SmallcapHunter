@@ -134,11 +134,15 @@ def chat_claude(mensajes: list) -> str:
     sistema = next((m["content"] for m in mensajes if m["role"] == "system"), None)
     turnos = [m for m in mensajes if m["role"] != "system"]
     cliente = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
+    # La API rechaza system=None con un 400 ("Input should be a valid array"):
+    # el resumen de negocio no lleva mensaje de sistema, y con Claude fallaba
+    # siempre por eso. Solo lo paso si existe.
+    extra = {"system": sistema} if sistema else {}
     respuesta = cliente.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1500,
-        system=sistema,
         messages=turnos,
+        **extra,
     )
     return RespuestaLLM(
         respuesta.content[0].text,
@@ -946,6 +950,7 @@ def vista_observabilidad():
             st.caption("Sin coste registrado todavía (p.ej. si solo se ha usado Gemini gratis).")
 
     st.divider()
+    bloque_coste_por_empresa()
     bloque_errores()
     bloque_calidad()
 
@@ -999,6 +1004,44 @@ def bloque_alertas():
         return
     for a in sorted(alertas, key=lambda x: x.gravedad != "critica"):
         (st.error if a.gravedad == "critica" else st.warning)(sin_latex(a.mensaje), icon="🔴" if a.gravedad == "critica" else "🟡")
+
+
+def bloque_coste_por_empresa():
+    """Cuánto cuesta analizar una empresa, no solo cuánto se gasta en total:
+    las llamadas del Detective y del Auditor de cada ticker, con sus tokens.
+    Sirve para estimar el coste de ampliar el universo (cuántas candidatas se
+    pueden analizar con un presupuesto) y para ver si alguna empresa se lleva
+    mucho más de lo normal (p. ej. por reintentos tras un JSON cortado)."""
+    por_empresa = query_df("""
+        select ticker,
+               count(*) as llamadas,
+               count(*) filter (where not exito) as fallos,
+               coalesce(sum(tokens_entrada), 0) as tokens_entrada,
+               coalesce(sum(tokens_salida), 0) as tokens_salida,
+               coalesce(sum(coste_estimado_usd), 0) as coste
+        from llm_calls
+        where ticker is not null and origen in ('detective', 'auditor')
+          and fecha >= now() - interval '30 days'
+        group by ticker
+        order by coste desc
+    """)
+    if por_empresa.empty:
+        return
+    por_empresa["coste"] = por_empresa["coste"].astype(float)
+    st.markdown("**Coste por empresa analizada (30 días)**")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Empresas con análisis", f"{len(por_empresa)}")
+    c2.metric("Coste medio por empresa", f"${por_empresa['coste'].mean():.3f}")
+    c3.metric("La más cara", f"${por_empresa['coste'].max():.3f}", por_empresa.iloc[0]["ticker"], delta_color="off")
+    with st.expander("Las 15 que más han costado"):
+        st.dataframe(
+            por_empresa.head(15), use_container_width=True, hide_index=True,
+            column_config={"coste": st.column_config.NumberColumn("coste $", format="$%.3f")},
+        )
+    st.caption(
+        "Incluye los reintentos y las llamadas fallidas, que también se pagan. "
+        "Gemini va en el tier gratuito y no suma coste."
+    )
 
 
 def bloque_errores():
@@ -1233,6 +1276,171 @@ def bloque_calidad():
             )
 
 
+def seguimiento_activado() -> bool:
+    import seguimiento_senales
+    return seguimiento_senales.activado()
+
+
+@st.cache_data(ttl=300)
+def _seguimiento() -> dict:
+    """El cálculo completo del seguimiento (ver seguimiento_senales.py),
+    cacheado 5 min: los precios solo cambian cuando corre la actualización."""
+    import seguimiento_senales
+    return seguimiento_senales.cargar_seguimiento(conectar_db())
+
+
+def vista_seguimiento():
+    """
+    La cartera de señales: cada empresa que algún agente marcó MUY_INTERESANTE,
+    con el precio que tenía ese día y cómo evoluciona después. La tesis es de
+    largo plazo (que la empresa crezca y su acción se multiplique a lo largo de
+    un año o más), así que lo que se enseña es sencillo: precio en la señal,
+    precio hoy, recorrido y cuánto lleva del año. La comparación con el
+    Russell 2000, que sí es una lectura de finanzas, queda al fondo.
+    """
+    import seguimiento_senales as ss
+
+    st.subheader("🎯 Seguimiento de señales")
+    st.caption(
+        "Cada empresa que algún agente marcó como MUY_INTERESANTE, con el precio que tenía el día "
+        "de la señal y cómo evoluciona después. La tesis es a un año o más: una empresa que se "
+        "duplica es x2.0. Se cuenta una sola vez por empresa, la primera vez que salió."
+    )
+
+    try:
+        datos = _seguimiento()
+    except Exception as e:
+        st.error(f"No pude calcular el seguimiento: {e}")
+        return
+
+    if datos["precios_hasta"] is None or not datos["cartera"]:
+        st.info(
+            "Todavía no hay precios guardados. Se descargan con "
+            "`python seguimiento_senales.py --actualizar` (y el orquestador lo hace en cada pasada)."
+        )
+        return
+
+    cartera = sorted(datos["cartera"], key=lambda c: c["fecha"])
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Empresas en la cartera", f"{len(cartera)}")
+    c2.metric("Señal más antigua", f"{max(c['dias_calendario'] for c in cartera)} de 365 días")
+    c3.metric("Precios hasta", f"{datos['precios_hasta']:%d/%m/%Y}")
+    if datos["sin_precios"]:
+        st.warning(
+            f"{len(datos['sin_precios'])} empresas no tienen precios en Yahoo (¿dejaron de cotizar?) "
+            "y no se pueden seguir."
+        )
+
+    def modelos(c):
+        return "los dos" if c["ambos"] else c["modelos"][0]
+
+    tabla = pd.DataFrame([{
+        "ticker": c["ticker"], "empresa": c.get("nombre"), "señal": c["fecha"], "la dieron": modelos(c),
+        "precio en la señal": c["precio_senal"], "precio hoy": c["precio_actual"],
+        "cambio": 100 * c["retorno"], "veces": c["multiplo"],
+        "máx.": 100 * c["max_subida"], "mín.": 100 * c["max_caida"],
+        "días": c["dias_calendario"], "del año": 100 * c["progreso_anio"],
+    } for c in cartera])
+    pct = st.column_config.NumberColumn(format="%+.1f%%")
+    st.dataframe(
+        tabla, use_container_width=True, hide_index=True,
+        column_config={
+            "precio en la señal": st.column_config.NumberColumn(format="$%.2f"),
+            "precio hoy": st.column_config.NumberColumn(format="$%.2f"),
+            "cambio": pct, "máx.": pct, "mín.": pct,
+            "veces": st.column_config.NumberColumn("veces", format="x%.2f", help="Precio de hoy dividido entre el de la señal"),
+            "del año": st.column_config.ProgressColumn("del año", min_value=0, max_value=100, format="%d%%",
+                                                       help="Cuánto lleva de los 12 meses desde la señal"),
+        },
+    )
+    st.caption(
+        "Máx. y mín.: lo más alto y lo más bajo que llegó a cotizar desde la señal, respecto al precio de ese "
+        "día. Una señal de hace un par de días todavía no significa nada: mira la columna «del año»."
+    )
+
+    st.markdown("**Cómo evoluciona cada una desde su señal** (100 = el precio el día de la señal)")
+    lineas = pd.DataFrame([
+        {"ticker": c["ticker"], "dia": d, "indice": v} for c in cartera for d, v in c["serie"]
+    ])
+    destacada = st.selectbox(
+        "Resaltar una empresa", ["(ninguna)"] + [c["ticker"] for c in cartera], index=0,
+    )
+    lineas["resaltada"] = lineas["ticker"] == destacada
+    base = alt.Chart(lineas).encode(
+        x=alt.X("dia:Q", title="días desde la señal (365 = un año)",
+                scale=alt.Scale(domain=[0, 365]), axis=alt.Axis(values=[0, 91, 182, 273, 365])),
+        y=alt.Y("indice:Q", title="precio (100 = día de la señal)", scale=alt.Scale(zero=False)),
+        detail="ticker:N",
+        tooltip=[alt.Tooltip("ticker:N"), alt.Tooltip("dia:Q", title="día"),
+                 alt.Tooltip("indice:Q", title="índice", format=".0f")],
+    )
+    resto = base.transform_filter(alt.datum.resaltada == False).mark_line(  # noqa: E712
+        strokeWidth=1.2, opacity=0.45, color="#2a78d6")
+    foco = base.transform_filter(alt.datum.resaltada == True).mark_line(  # noqa: E712
+        strokeWidth=3, color="#eb6834")
+    cien = alt.Chart(pd.DataFrame({"y": [100]})).mark_rule(color="#8a8984", strokeDash=[4, 4]).encode(y="y:Q")
+    mostrar_grafico(alt.layer(cien, resto, foco), alto=320)
+
+    if destacada != "(ninguna)":
+        c = next(c for c in cartera if c["ticker"] == destacada)
+        serie = pd.DataFrame(datos["precios"][destacada], columns=["fecha", "precio"])
+        serie["fecha"] = pd.to_datetime(serie["fecha"])
+        st.markdown(f"**{destacada}: precio de cierre**")
+        precio = alt.Chart(serie).mark_line(strokeWidth=2, color="#2a78d6").encode(
+            x=alt.X("fecha:T", title=None, axis=alt.Axis(format="%d %b")),
+            y=alt.Y("precio:Q", title="USD", scale=alt.Scale(zero=False), axis=alt.Axis(format="$.2f")),
+            tooltip=[alt.Tooltip("fecha:T", format="%d %b %Y"), alt.Tooltip("precio:Q", format="$.2f")],
+        )
+        nivel = alt.Chart(pd.DataFrame({"y": [c["precio_senal"]]})).mark_rule(
+            color="#eb6834", strokeDash=[5, 4]).encode(y="y:Q")
+        dia = alt.Chart(pd.DataFrame({"x": [pd.Timestamp(c["fecha"])]})).mark_rule(
+            color="#eb6834").encode(x="x:T")
+        mostrar_grafico(alt.layer(precio, nivel, dia), alto=240)
+        st.caption(
+            f"La línea naranja marca la señal ({c['fecha']:%d/%m/%Y}, a ${c['precio_senal']:.2f}). "
+            f"Hoy: ${c['precio_actual']:.2f} ({c['multiplo']:.2f} veces el precio de la señal)."
+        )
+
+    with st.expander("Lectura avanzada: ¿lo hace mejor o peor que el mercado? (Russell 2000)"):
+        st.caption(
+            "Compara cada señal con el IWM (ETF del Russell 2000) en el mismo periodo exacto: el exceso es "
+            "el retorno de la empresa menos el del IWM. A unas semanas de una señal esto dice poco de una tesis "
+            "a un año; se enseña por completitud y porque con el tiempo será la lectura más honesta."
+        )
+        modo = st.radio(
+            "Qué señales", ["Por veredicto de cada modelo", "Consenso Claude + Gemini (último análisis)"],
+            horizontal=True,
+        )
+        medidas = datos["consenso"] if modo.startswith("Consenso") else datos["por_senal"]
+        resumen = pd.DataFrame(ss.resumen_por_grupo(medidas))
+        if resumen.empty:
+            st.info("Todavía no hay señales con unos días de recorrido para comparar.")
+        else:
+            def pct_col(col):
+                return resumen[col].map(lambda x: None if x is None or pd.isna(x) else 100 * x)
+
+            avanzada = pd.DataFrame({
+                "grupo": resumen["veredicto"], "señales": resumen["n"],
+                "días (media)": resumen["dias_medios"].round(0),
+                "exceso medio": pct_col("exceso_medio"), "exceso mediano": pct_col("exceso_mediano"),
+                "bate al IWM": 100 * resumen["pct_bate_iwm"],
+                "1 mes": pct_col("exceso_1m"), "n 1m": resumen["n_1m"],
+                "3 meses": pct_col("exceso_3m"), "n 3m": resumen["n_3m"],
+            })
+            f = st.column_config.NumberColumn(format="%+.1f%%")
+            st.dataframe(
+                avanzada, use_container_width=True, hide_index=True,
+                column_config={"exceso medio": f, "exceso mediano": f, "1 mes": f, "3 meses": f,
+                               "bate al IWM": st.column_config.NumberColumn(format="%.0f%%")},
+            )
+
+    st.caption(
+        "Límites: el veredicto es el real del modelo (no la etiqueta ALUCINACION). Los precios van ajustados "
+        "por splits y dividendos. Las empresas que dejan de cotizar quedan fuera. Los análisis de julio y "
+        "septiembre se hicieron con otros prompts y otros modelos, así que no son comparables con los de ahora."
+    )
+
+
 def vista_chat(ticker: str, modelo: str):
     st.subheader(f"💬 Chat sobre {ticker}")
     st.caption(
@@ -1294,10 +1502,11 @@ def main():
 
     with st.sidebar:
         st.markdown("### Navegación")
-        vista = st.radio(
-            "Vista", ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat", "📈 Observabilidad"],
-            label_visibility="collapsed",
-        )
+        vistas = ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat", "📈 Observabilidad"]
+        if seguimiento_activado():
+            # Vista personal, apagada por defecto (ver seguimiento_senales.activado)
+            vistas.insert(3, "🎯 Seguimiento")
+        vista = st.radio("Vista", vistas, label_visibility="collapsed")
 
         ticker = None
         modelo = "claude"
@@ -1341,6 +1550,8 @@ def main():
         vista_candidatas()
     elif vista == "🔎 Empresa" and ticker:
         vista_empresa(ticker)
+    elif vista == "🎯 Seguimiento" and seguimiento_activado():
+        vista_seguimiento()
     elif vista == "💬 Chat" and ticker:
         vista_chat(ticker, modelo)
     elif vista == "📈 Observabilidad":

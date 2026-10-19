@@ -210,6 +210,11 @@ Cinco vistas:
 - **Observabilidad:** coste, latencia y errores de cada llamada a un LLM,
   y la calidad por modelo (ver abajo).
 
+Hay además una vista opcional de uso personal, apagada por defecto, que
+guarda el precio de cada empresa el día de su análisis para consulta propia
+(`MOSTRAR_SEGUIMIENTO=1` en el `.env`; ver `seguimiento_senales.py`). No es un
+resultado del proyecto ni consejo de inversión.
+
 ### Observabilidad
 
 Cada llamada real a un modelo (Detective, Auditor, chat y resumen de
@@ -225,6 +230,9 @@ hubo. De ahí sale la pestaña Observabilidad del dashboard:
   coinciden Claude y Gemini. Se calcula sobre lo ya guardado, sin llamadas
   extra a ningún LLM.
 
+- **Coste por empresa:** lo que cuesta analizar cada ticker (Detective y
+  Auditor, con reintentos y fallos incluidos). Hoy son unos 0,06 $ de media
+  por empresa, 0,115 $ la más cara.
 - **Cuota de Gemini:** cuántas de las 20 peticiones gratuitas de hoy van
   gastadas y cuándo se renuevan (medianoche del Pacífico, en hora de
   Madrid). Sale de `llm_calls`, así que solo cuenta lo que hizo este
@@ -337,6 +345,7 @@ smallcap_hunter/
 ├── verificador_citas.py              # verificador determinista de citas (v2, por categorías)
 ├── errores_llm.py                    # categorías de error de las llamadas a un LLM
 ├── alertas.py                        # revisión de salud del sistema + aviso por Telegram
+├── seguimiento_senales.py            # vista personal opcional: precio de cada empresa el día de su análisis
 ├── cuota_gemini.py                   # cuota gratuita diaria de Gemini: cuenta y recorte de la pasada
 ├── auditor.py                        # agente LLM cruzado que impugna la tesis
 ├── grafo_capa3.py                    # Detective(s) + Auditor como grafo de LangGraph
@@ -358,6 +367,7 @@ smallcap_hunter/
 │   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
 │   ├── test_errores_llm.py           # clasificación de errores, JSON truncado
 │   ├── test_alertas.py               # reglas de alerta y envío por Telegram
+│   ├── test_seguimiento_senales.py   # cálculo de la vista personal de precios, con series inventadas
 │   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
@@ -545,10 +555,6 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   auditorías y el de Gemini solo en 12 de 25 (ver Resultados). Habría que
   separar rigor de sesgo: auditar con cada modelo los mismos análisis y
   comparar, o darle casos de control con veredicto conocido
-- **Contrastar los veredictos con lo que hizo el precio** — el sistema ya
-  mide si las citas existen, pero no si las empresas marcadas
-  MUY_INTERESANTE acabaron subiendo. Es la pregunta de fondo del proyecto
-  y hace falta tiempo para tener datos
 - **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
   montado a mano en una máquina. Un compose con Postgres + pgvector y la
   app permitiría levantarlo con un comando, y la CI podría construir la

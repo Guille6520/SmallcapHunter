@@ -92,3 +92,33 @@ def test_llamar_claude_propaga_el_stop_reason(monkeypatch):
     r = llamar_claude("prompt")
 
     assert r.truncada and r.tokens_salida == 8000
+
+
+def test_chat_claude_no_manda_system_cuando_no_hay_mensaje_de_sistema(monkeypatch):
+    """La API de Anthropic rechaza system=None con un 400. El resumen de negocio
+    del dashboard no lleva mensaje de sistema, y con Claude fallaba siempre."""
+    import dashboard
+
+    recibidos = []
+
+    def create(**kwargs):
+        recibidos.append(kwargs)
+        return types.SimpleNamespace(
+            content=[types.SimpleNamespace(text="ok")],
+            usage=types.SimpleNamespace(input_tokens=1, output_tokens=1),
+            stop_reason="end_turn",
+        )
+
+    class _ClienteFalso:
+        def __init__(self, **kw):
+            self.messages = types.SimpleNamespace(create=create)
+
+    monkeypatch.setitem(sys.modules, "anthropic", types.SimpleNamespace(Anthropic=_ClienteFalso))
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "clave-falsa")
+
+    dashboard.chat_claude([{"role": "user", "content": "hola"}])
+    dashboard.chat_claude([{"role": "system", "content": "eres un analista"}, {"role": "user", "content": "hola"}])
+
+    assert "system" not in recibidos[0], "sin mensaje de sistema no se manda el campo"
+    assert recibidos[1]["system"] == "eres un analista"
+    assert [m["role"] for m in recibidos[1]["messages"]] == ["user"], "el sistema no va entre los turnos"

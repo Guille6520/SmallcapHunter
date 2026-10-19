@@ -539,6 +539,14 @@ def fase_agentes(config: dict) -> dict:
     return resultado
 
 
+def fase_seguimiento() -> dict:
+    """Baja los precios nuevos de las empresas con veredicto y del IWM, para el
+    seguimiento de señales (seguimiento_senales.py). No es crítico: si Yahoo
+    falla se queda en el log y la pasada sigue."""
+    from seguimiento_senales import fase_seguimiento as actualizar
+    return actualizar()
+
+
 def fase_alertas() -> list:
     """Revisión final de la pasada: errores por modelo, cuota de Gemini, gasto
     y calidad de citas (ver alertas.py). Va al final, cuando ya hay datos de
@@ -592,6 +600,7 @@ def una_pasada(args) -> None:
 
     resultado = fase_agentes(config)
     auditorias = fase_auditorias(config)
+    fase_seguimiento()
     fase_alertas()
 
     minutos = (datetime.now() - inicio).total_seconds() / 60
