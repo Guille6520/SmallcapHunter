@@ -175,11 +175,16 @@ python orquestador.py --daemon        # una pasada cada 48h (scheduler_horas)
 La fase de agentes decide por modelo, no por empresa: a un modelo le toca
 una empresa si nunca la analizó, si hay datos nuevos (un Form 4 de compra
 o un 8-K) o si su último análisis es de un protocolo anterior
-(`version_protocolo`, ver más abajo). Un modelo se retira del resto de la
-pasada tras 3 fallos seguidos (cuota agotada o proveedor caído), no al
-primero. Después corre una segunda fase que reintenta las auditorías que
-se quedaron sin guardar (JSON cortado, 503, cuota), con un tope de 3
-fallos por ticker en 7 días; los 429 de cuota no cuentan para ese tope.
+(`version_protocolo`, ver más abajo). Antes de empezar cuenta cuánta cuota
+gratuita de Gemini queda hoy (20 peticiones al día, ~2 por empresa) y
+recorta la pasada a lo que cabe, en vez de gastar llamadas que ya sabe que
+van a dar 429; lo aplazado entra en la siguiente
+(`configuracion.gemini_limite_diario`, 0 = sin límite). Un modelo se
+retira del resto de la pasada tras 3 fallos seguidos (cuota agotada o
+proveedor caído), no al primero. Después corre una segunda fase que
+reintenta las auditorías que se quedaron sin guardar (JSON cortado, 503,
+cuota), con un tope de 3 fallos por ticker en 7 días; los 429 de cuota no
+cuentan para ese tope.
 
 Si `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` están configurados, cada
 análisis del Detective o el Auditor manda un aviso a tu Telegram con el
@@ -220,6 +225,10 @@ hubo. De ahí sale la pestaña Observabilidad del dashboard:
   coinciden Claude y Gemini. Se calcula sobre lo ya guardado, sin llamadas
   extra a ningún LLM.
 
+- **Cuota de Gemini:** cuántas de las 20 peticiones gratuitas de hoy van
+  gastadas y cuándo se renuevan (medianoche del Pacífico, en hora de
+  Madrid). Sale de `llm_calls`, así que solo cuenta lo que hizo este
+  sistema.
 - **Errores por tipo:** cada fallo se guarda con su categoría (cuota 429,
   proveedor saturado, timeout, JSON roto, JSON **cortado por el tope de
   tokens**...). Importa porque cada una se arregla distinto: una cuota se
@@ -328,6 +337,7 @@ smallcap_hunter/
 ├── verificador_citas.py              # verificador determinista de citas (v2, por categorías)
 ├── errores_llm.py                    # categorías de error de las llamadas a un LLM
 ├── alertas.py                        # revisión de salud del sistema + aviso por Telegram
+├── cuota_gemini.py                   # cuota gratuita diaria de Gemini: cuenta y recorte de la pasada
 ├── auditor.py                        # agente LLM cruzado que impugna la tesis
 ├── grafo_capa3.py                    # Detective(s) + Auditor como grafo de LangGraph
 │
@@ -348,6 +358,7 @@ smallcap_hunter/
 │   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
 │   ├── test_errores_llm.py           # clasificación de errores, JSON truncado
 │   ├── test_alertas.py               # reglas de alerta y envío por Telegram
+│   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
 │   └── test_api.py                   # endpoints de FastAPI
@@ -410,6 +421,69 @@ conservan). También reintenta las auditorías que quedaron sin guardarse.
 
 ---
 
+## Resultados: qué cambió con el protocolo 2
+
+Medido sobre las 25 candidatas actuales (score ≥ 25/40), analizadas por
+Claude y por Gemini, antes y después de cambiar el prompt y el verificador
+de citas. Los números salen de la pestaña Observabilidad, no de una hoja
+aparte.
+
+| | Protocolo 1 (antes) | Protocolo 2 (ahora) |
+|---|---|---|
+| Análisis marcados ALUCINACION, Claude | 10 de 21 (48 %) | 0 de 25 |
+| Análisis marcados ALUCINACION, Gemini | 20 de 51 (39 %) | 0 de 25 |
+| Citas copiadas literalmente, Claude | 47 % | 55 % |
+| Citas copiadas literalmente, Gemini | 50 % | 63 % |
+| Citas con soporte en el texto, Claude / Gemini | no se medía | 96 % / 95 % |
+
+De las 456 citas del protocolo 2, solo 21 (el 5 %) no tienen soporte: 7 de
+168 en Claude y 14 de 288 en Gemini.
+
+**Cómo leerlo, sin venderlo mejor de lo que es.**
+
+- **La caída de ALUCINACION no es solo que los modelos inventen menos.**
+  Cuando volví a puntuar con el verificador nuevo las respuestas del
+  prompt antiguo (el lote del 14-oct, sin llamar a ningún modelo), las
+  marcas de Claude bajaron de 6 de 10 a 1 de 10, y las de Gemini se
+  quedaron en 2 de 7. Casi todas las citas "alucinadas" eran traducciones
+  al español, fragmentos unidos con `...`, guiones distintos, líneas de la
+  lista de insiders (que no están en el MD&A) o filas de tabla recompuestas.
+  En Claude el salto se explica sobre todo por medir mejor; en Gemini, por
+  el cambio de prompt.
+- **La única cifra comparable sin truco es la de citas literales**, porque
+  se calcula igual en los dos protocolos: sube ocho puntos en Claude y
+  trece en Gemini al pedir la cita en inglés, sin traducir, y la
+  traducción aparte.
+- **El verificador comprueba que la evidencia existe, no que la
+  interpretación sea correcta.** Una cita real con una explicación
+  inventada pasa. Para eso está el Auditor cruzado.
+- **Las muestras son pequeñas y no están emparejadas.** El protocolo 1 son
+  los análisis históricos (otras empresas y otras fechas); el protocolo 2,
+  las 25 de hoy.
+- **Todavía no se ha contrastado con el precio de las acciones**, que es la
+  pregunta de fondo del proyecto.
+
+**Otros datos que salieron del análisis**
+
+- **Claude y Gemini coinciden en el veredicto en 13 de 25 empresas (52 %).**
+  Los dos dan MUY_INTERESANTE a tres (ADTN, HROW y VITL), y al menos uno a
+  quince.
+- **El Auditor de Claude empeoró el veredicto en las 25 auditorías.** El de
+  Gemini confirmó 9, empeoró 12 y mejoró 4. Puede ser rigor o puede ser un
+  sesgo del modelo; con estos datos no se distingue (ver el roadmap).
+- **El coste real** desde el 14-oct es de 1,60 $ en 160 llamadas (Claude y
+  Gemini), con la migración, las pruebas y el chat incluidos: unos 2 céntimos por llamada
+  de Claude. Gemini va en el tier gratuito.
+- **Fiabilidad:** en una semana cada modelo falló en torno al 10 % de las
+  llamadas, sobre todo 503 puntuales. Gracias al registro de tokens se vio
+  que el JSON cortado de Claude era el tope de `max_tokens` y no el modelo
+  (2000, luego 4000 y ahora 8000).
+
+El método completo, el desglose por tipo de cita y las consultas para
+reproducirlo están en [docs/evaluacion-citas.md](docs/evaluacion-citas.md).
+
+---
+
 ## Qué queda pendiente incluso dentro de lo ya implementado
 
 Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
@@ -467,6 +541,14 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   reenvía lo que siga activo (no recuerda lo ya avisado). Faltaría
   guardarlos en la tabla `configuracion`, no repetir un aviso ya enviado y
   una alerta de "el orquestador lleva días sin correr"
+- **Calibrar al Auditor** — el de Claude empeoró el veredicto en 25 de 25
+  auditorías y el de Gemini solo en 12 de 25 (ver Resultados). Habría que
+  separar rigor de sesgo: auditar con cada modelo los mismos análisis y
+  comparar, o darle casos de control con veredicto conocido
+- **Contrastar los veredictos con lo que hizo el precio** — el sistema ya
+  mide si las citas existen, pero no si las empresas marcadas
+  MUY_INTERESANTE acabaron subiendo. Es la pregunta de fondo del proyecto
+  y hace falta tiempo para tener datos
 - **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
   montado a mano en una máquina. Un compose con Postgres + pgvector y la
   app permitiría levantarlo con un comando, y la CI podría construir la
