@@ -33,6 +33,7 @@ Cómo usarlo:
 """
 
 import os
+import re
 import json
 import time
 import logging
@@ -119,15 +120,25 @@ class RespuestaLLM(str):
     El texto de la respuesta, tal cual lo devolvía siempre llamar_modelo()
     -- se comporta exactamente como el str que ya esperaba todo el que la
     consume (parsear_json_llm, slicing para logs, comparaciones...),
-    porque ES un str, solo que con los tokens de entrada/salida colgados
-    como atributos extra. Así puedo medir coste real sin tocar la firma
+    porque ES un str, solo que con los tokens de entrada/salida y el motivo
+    de fin colgados como atributos extra. Así puedo medir coste real y
+    saber si el modelo se cortó por el tope de tokens sin tocar la firma
     de llamar_modelo() ni de ningún caller existente.
+
+    motivo_fin: lo que dice el proveedor ("end_turn" / "max_tokens" en
+    Claude, "STOP" / "MAX_TOKENS" en Gemini). None si no lo informó.
     """
-    def __new__(cls, texto, tokens_entrada=None, tokens_salida=None):
+    def __new__(cls, texto, tokens_entrada=None, tokens_salida=None, motivo_fin=None):
         obj = str.__new__(cls, texto or "")
         obj.tokens_entrada = tokens_entrada
         obj.tokens_salida = tokens_salida
+        obj.motivo_fin = motivo_fin
         return obj
+
+    @property
+    def truncada(self) -> bool:
+        """True si el modelo paró por el tope de tokens de salida."""
+        return "max_tokens" in str(self.motivo_fin or "").lower()
 
 
 def conectar_db():
@@ -536,10 +547,13 @@ def llamar_gemini(prompt: str) -> str:
         ),
     )
     uso = getattr(respuesta, "usage_metadata", None)
+    candidatos = getattr(respuesta, "candidates", None) or []
+    motivo = getattr(candidatos[0], "finish_reason", None) if candidatos else None
     return RespuestaLLM(
         respuesta.text,
         tokens_entrada=getattr(uso, "prompt_token_count", None) if uso else None,
         tokens_salida=getattr(uso, "candidates_token_count", None) if uso else None,
+        motivo_fin=getattr(motivo, "name", motivo),
     )
 
 
@@ -582,6 +596,7 @@ def llamar_claude(prompt: str) -> str:
         texto.strip(),
         tokens_entrada=respuesta.usage.input_tokens,
         tokens_salida=respuesta.usage.output_tokens,
+        motivo_fin=respuesta.stop_reason,
     )
 
 
@@ -592,6 +607,57 @@ def llamar_modelo(modelo: str, prompt: str) -> str:
     if modelo == "claude":
         return llamar_claude(prompt)
     raise ValueError(f"Modelo desconocido: {modelo}")
+
+
+# Categorías de error de una llamada a un LLM. Se guardan como prefijo de
+# llm_calls.tipo_error ("cuota_429: You exceeded..."), así no hace falta una
+# columna nueva ni tocar el esquema. Antes todo era texto libre, y un JSON
+# cortado por el tope de tokens se veía igual que uno mal formado: tardamos
+# días en descubrir que era el límite de salida y no el modelo.
+CATEGORIAS_ERROR = (
+    "truncado",           # el modelo paró por max_tokens: JSON cortado
+    "json_invalido",      # JSON roto sin que haya sido el tope de tokens
+    "cuota_429",          # límite de peticiones o cuota diaria agotada
+    "sobrecarga_503",     # proveedor saturado o caído (503, 504, 529 overloaded)
+    "timeout",
+    "autenticacion",      # clave inválida o sin permisos (401/403)
+    "peticion_invalida",  # 400: algo de la petición que el proveedor rechaza
+    "error_proveedor",    # cualquier otro fallo de la API
+)
+
+
+def clasificar_error(mensaje: str) -> str:
+    """Categoría de un error a partir de su texto. Si el texto ya empieza por
+    una categoría (filas nuevas) la respeta; si no (filas anteriores a la
+    clasificación) la deduce de lo que dice el proveedor."""
+    texto = (mensaje or "").strip().lower()
+    for categoria in CATEGORIAS_ERROR:
+        if texto.startswith(categoria):
+            return categoria
+    if re.search(r"\b429\b|resource_exhausted|rate[_ ]limit", texto):
+        return "cuota_429"
+    if re.search(r"\b50[34]\b|\b529\b|unavailable|overloaded", texto):
+        return "sobrecarga_503"
+    if "timeout" in texto or "timed out" in texto:
+        return "timeout"
+    if re.search(r"\b40[13]\b|authentication|permission|api[_ ]key", texto):
+        return "autenticacion"
+    if re.search(r"\b400\b|invalid_request", texto):
+        return "peticion_invalida"
+    return "error_proveedor"
+
+
+def describir_error(e: Exception) -> str:
+    """Lo que se guarda en llm_calls.tipo_error para una excepción de la API."""
+    texto = str(e)
+    return f"{clasificar_error(texto)}: {texto}"[:200]
+
+
+def describir_error_json(respuesta, e: Exception) -> str:
+    """Para un JSON que no se pudo parsear: truncado si el proveedor dice que
+    el modelo paró por el tope de tokens, json_invalido si no."""
+    categoria = "truncado" if getattr(respuesta, "truncada", False) else "json_invalido"
+    return f"{categoria}: {e}"[:200]
 
 
 def registrar_llamada_llm(*, origen: str, modelo: str, ticker: str = None,
@@ -681,7 +747,7 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
     except Exception as e:
         registrar_llamada_llm(
             origen="detective", modelo=modelo, ticker=ticker,
-            segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+            segundos=time.time() - t0, exito=False, tipo_error=describir_error(e),
         )
         raise
 
@@ -692,9 +758,13 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
             origen="detective", modelo=modelo, ticker=ticker,
             tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
             tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
-            segundos=time.time() - t0, exito=False, tipo_error=f"json_invalido: {e}"[:200],
+            segundos=time.time() - t0, exito=False, tipo_error=describir_error_json(texto_respuesta, e),
         )
-        log.error(f"El modelo no devolvió JSON válido: {e}\nRespuesta cruda: {texto_respuesta[:500]}")
+        log.error(
+            f"El modelo no devolvió JSON válido "
+            f"({'cortado por max_tokens' if getattr(texto_respuesta, 'truncada', False) else 'sin truncar'}): "
+            f"{e}\nRespuesta cruda: {texto_respuesta[:500]}"
+        )
         return None
 
     registrar_llamada_llm(

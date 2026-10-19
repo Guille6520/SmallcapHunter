@@ -37,7 +37,10 @@ import pandas as pd
 import psycopg2
 import streamlit as st
 
-from detective import obtener_contexto_empresa, MAX_CARACTERES_MDA, RespuestaLLM, registrar_llamada_llm
+from detective import (
+    obtener_contexto_empresa, MAX_CARACTERES_MDA, RespuestaLLM, registrar_llamada_llm,
+    describir_error, clasificar_error, CATEGORIAS_ERROR,
+)
 from notificador_telegram import enviar_telegram
 from dotenv import load_dotenv
 
@@ -262,7 +265,7 @@ No hables de resultados financieros ni de si es buena inversión, solo de qué h
         except Exception as e:
             registrar_llamada_llm(
                 origen="resumen_negocio", modelo=nombre, ticker=contexto.get("ticker"),
-                segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+                segundos=time.time() - t0, exito=False, tipo_error=describir_error(e),
             )
             errores.append(f"{nombre}: {str(e)[:150]}")
 
@@ -941,20 +944,62 @@ def vista_observabilidad():
             st.caption("Sin coste registrado todavía (p.ej. si solo se ha usado Gemini gratis).")
 
     st.divider()
-    st.markdown("**Últimos errores**")
+    bloque_errores()
+    bloque_calidad()
+
+
+def bloque_errores():
+    """
+    Por qué fallan las llamadas, no solo cuántas. Cada error se guarda con
+    una categoría (cuota, proveedor saturado, JSON cortado por el tope de
+    tokens...) para que un "87% de éxito" diga también qué arreglar: una
+    cuota agotada se arregla esperando o pagando, un JSON truncado
+    subiendo max_tokens, un JSON roto cambiando el prompt o el modelo. Las
+    filas anteriores a la clasificación se categorizan al leerlas.
+    """
     errores = query_df("""
         select fecha, origen, modelo, ticker, tipo_error
         from llm_calls
-        where not exito
+        where not exito and fecha >= now() - interval '30 days'
         order by fecha desc
-        limit 20
     """)
+    st.markdown("**Errores por tipo (30 días)**")
     if errores.empty:
         st.success("Sin errores registrados en los últimos 30 días.")
-    else:
-        st.dataframe(errores, use_container_width=True, hide_index=True)
+        return
 
-    bloque_calidad()
+    errores["tipo"] = errores["tipo_error"].map(clasificar_error)
+    errores["detalle"] = errores["tipo_error"].fillna("").str.replace(
+        r"^[a-z_0-9]+:\s*", "", regex=True
+    )
+    por_tipo = errores.groupby(["tipo", "modelo"]).size().reset_index(name="n")
+    orden = por_tipo.groupby("tipo")["n"].sum().sort_values(ascending=False).index.tolist()
+
+    base = alt.Chart(por_tipo).encode(
+        y=alt.Y("tipo:N", title=None, sort=orden),
+        x=alt.X("n:Q", title="errores", axis=alt.Axis(tickMinStep=1)),
+        color=alt.Color(
+            "modelo:N", title=None,
+            scale=alt.Scale(domain=list(COLORES_MODELO), range=list(COLORES_MODELO.values())),
+            legend=alt.Legend(orient="top"),
+        ),
+    )
+    mostrar_grafico(
+        base.mark_bar(size=18, stroke="white", strokeWidth=1.5).encode(
+            tooltip=[alt.Tooltip("tipo:N"), alt.Tooltip("modelo:N"), alt.Tooltip("n:Q", title="errores")],
+        ),
+        alto=max(90, 46 * len(orden)),
+    )
+    st.caption(
+        "Los errores anteriores al 19-oct-2026 no distinguían el JSON cortado por el "
+        "tope de tokens: salen como json_invalido aunque algunos fueran truncados."
+    )
+
+    st.markdown("**Últimos errores**")
+    st.dataframe(
+        errores[["fecha", "origen", "modelo", "ticker", "tipo", "detalle"]].head(20),
+        use_container_width=True, hide_index=True,
+    )
 
 
 def bloque_calidad():
@@ -1182,7 +1227,7 @@ def vista_chat(ticker: str, modelo: str):
                 except Exception as e:
                     registrar_llamada_llm(
                         origen="chat", modelo=modelo, ticker=ticker,
-                        segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+                        segundos=time.time() - t0, exito=False, tipo_error=describir_error(e),
                     )
                     respuesta = f"Error llamando a {modelo}: {e}"
             st.markdown(sin_latex(respuesta))

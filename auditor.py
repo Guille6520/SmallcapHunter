@@ -38,7 +38,7 @@ from detective import (
     conectar_db, obtener_contexto_empresa, llamar_modelo,
     parsear_json_llm, verificar_citas, formatear_eventos_8k,
     formatear_senales_mercado, texto_fuente_citas, MAX_CARACTERES_MDA,
-    registrar_llamada_llm, VERSION_PROTOCOLO,
+    registrar_llamada_llm, VERSION_PROTOCOLO, describir_error, describir_error_json,
 )
 from notificador_telegram import notificar_analisis
 
@@ -214,7 +214,7 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
         except Exception as e:
             registrar_llamada_llm(
                 origen="auditor", modelo=modelo_auditor, ticker=ticker,
-                segundos=time.time() - t0, exito=False, tipo_error=str(e)[:200],
+                segundos=time.time() - t0, exito=False, tipo_error=describir_error(e),
             )
             raise
 
@@ -225,9 +225,12 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
                 origen="auditor", modelo=modelo_auditor, ticker=ticker,
                 tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
                 tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
-                segundos=time.time() - t0, exito=False, tipo_error=f"json_invalido: {e}"[:200],
+                segundos=time.time() - t0, exito=False, tipo_error=describir_error_json(texto_respuesta, e),
             )
-            log.error(f"El auditor no devolvió JSON válido: {e}")
+            log.error(
+                f"El auditor no devolvió JSON válido "
+                f"({'cortado por max_tokens' if getattr(texto_respuesta, 'truncada', False) else 'sin truncar'}): {e}"
+            )
             continue
 
         registrar_llamada_llm(
