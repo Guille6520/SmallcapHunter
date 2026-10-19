@@ -39,7 +39,7 @@ import streamlit as st
 
 from detective import (
     obtener_contexto_empresa, MAX_CARACTERES_MDA, RespuestaLLM, registrar_llamada_llm,
-    describir_error, clasificar_error, CATEGORIAS_ERROR,
+    describir_error, clasificar_error,
 )
 from notificador_telegram import enviar_telegram
 from dotenv import load_dotenv
@@ -846,6 +846,7 @@ def vista_observabilidad():
         "Cada llamada real a un LLM se registra en llm_calls al hacerse "
         "-- coste, latencia y errores del propio sistema, no de un panel externo."
     )
+    bloque_alertas()
 
     resumen = query_df("""
         select count(*) as llamadas,
@@ -946,6 +947,31 @@ def vista_observabilidad():
     st.divider()
     bloque_errores()
     bloque_calidad()
+
+
+@st.cache_data(ttl=120)
+def _alertas_activas() -> list:
+    """Cacheadas 2 minutos como el resto de consultas del dashboard. Usa la
+    conexión compartida de conectar_db(): no se cierra aquí."""
+    from alertas import leer_metricas, evaluar
+    return evaluar(leer_metricas(conectar_db()))
+
+
+def bloque_alertas():
+    """Las mismas reglas que avisan por Telegram al final de cada pasada
+    (alertas.py), pero a la vista: lo que está mal ahora mismo, o que no hay
+    nada. Si la consulta falla, la pestaña sigue funcionando sin el banner."""
+    try:
+        alertas = _alertas_activas()
+    except Exception as e:
+        st.caption(f"No pude evaluar las alertas: {e}")
+        return
+
+    if not alertas:
+        st.success("Sin alertas activas: errores, cuota de Gemini, gasto y calidad de citas dentro de lo normal.")
+        return
+    for a in sorted(alertas, key=lambda x: x.gravedad != "critica"):
+        (st.error if a.gravedad == "critica" else st.warning)(sin_latex(a.mensaje), icon="🔴" if a.gravedad == "critica" else "🟡")
 
 
 def bloque_errores():

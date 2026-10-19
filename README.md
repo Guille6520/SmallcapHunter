@@ -220,6 +220,19 @@ hubo. De ahí sale la pestaña Observabilidad del dashboard:
   coinciden Claude y Gemini. Se calcula sobre lo ya guardado, sin llamadas
   extra a ningún LLM.
 
+- **Errores por tipo:** cada fallo se guarda con su categoría (cuota 429,
+  proveedor saturado, timeout, JSON roto, JSON **cortado por el tope de
+  tokens**...). Importa porque cada una se arregla distinto: una cuota se
+  espera o se paga, un JSON truncado se arregla subiendo `max_tokens`.
+- **Alertas:** al final de cada pasada del orquestador (`alertas.py`, o a
+  mano con `python alertas.py --enviar`) se revisa la salud del sistema y,
+  solo si hay algo, llega un mensaje a Telegram: modelo con más del 25 % de
+  llamadas fallidas, respuestas truncadas, cuota gratuita de Gemini casi
+  agotada o agotada, gasto diario por encima de 1 $ y calidad de citas
+  baja o análisis marcados ALUCINACION. Las mismas reglas salen como banner
+  en la pestaña, y están probadas sin base de datos
+  (`tests/test_alertas.py`).
+
 Nació de una necesidad real: para decidir en sep-2026 si cambiar el
 modelo gratuito que fallaba, hubo que comprobar a mano el panel de cada
 proveedor. Con el registro, el mismo dato sale del propio sistema.
@@ -313,6 +326,8 @@ smallcap_hunter/
 ├── scorer_capa2.py                   # 4 sub-scores numéricos (0-40)
 ├── detective.py                      # agente LLM: tesis + citas verificables + RAG (Capa 4)
 ├── verificador_citas.py              # verificador determinista de citas (v2, por categorías)
+├── errores_llm.py                    # categorías de error de las llamadas a un LLM
+├── alertas.py                        # revisión de salud del sistema + aviso por Telegram
 ├── auditor.py                        # agente LLM cruzado que impugna la tesis
 ├── grafo_capa3.py                    # Detective(s) + Auditor como grafo de LangGraph
 │
@@ -331,6 +346,8 @@ smallcap_hunter/
 │   ├── test_pipeline_offline.py      # normalización, filtros, scoring, regex, citas
 │   ├── test_verificador_citas.py     # categorías del verificador y umbral de ALUCINACION
 │   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
+│   ├── test_errores_llm.py           # clasificación de errores, JSON truncado
+│   ├── test_alertas.py               # reglas de alerta y envío por Telegram
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
 │   └── test_api.py                   # endpoints de FastAPI
@@ -446,11 +463,10 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   sistema que responde sin pasar por `verificar_citas()` (es
   conversación libre, no JSON estructurado); habría que forzar al chat
   a citar de forma parseable y reutilizar el mismo verificador
-- **Alertas de calidad por modelo** — la pestaña Observabilidad ya
-  compara por modelo y protocolo el % de citas, las marcas ALUCINACION y
-  cuánto coinciden Claude y Gemini, pero hay que mirarla. Falta avisar por
-  Telegram cuando una métrica empeore (el declive de Nemotron en sep-2026
-  se notó tarde, cuando ya fallaba)
+- **Afinar las alertas** — hoy los umbrales son constantes y cada pasada
+  reenvía lo que siga activo (no recuerda lo ya avisado). Faltaría
+  guardarlos en la tabla `configuracion`, no repetir un aviso ya enviado y
+  una alerta de "el orquestador lleva días sin correr"
 - **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
   montado a mano en una máquina. Un compose con Postgres + pgvector y la
   app permitiría levantarlo con un comando, y la CI podría construir la

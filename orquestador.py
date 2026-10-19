@@ -38,6 +38,9 @@ Cómo usarlo:
   # solo tiene sentido tras cierre de trimestre):
   python orquestador.py --completo
 
+  # Revisión de salud (errores, cuota, gasto, calidad) a mano:
+  python alertas.py --enviar
+
   # Modo servicio: una pasada cada N horas (scheduler_horas de la
   # tabla configuracion, 48 por defecto), hasta que lo pares con Ctrl+C:
   python orquestador.py --daemon
@@ -499,6 +502,22 @@ def fase_agentes(config: dict) -> dict:
     return {"analizadas": analizadas, "fallos": fallos}
 
 
+def fase_alertas() -> list:
+    """Revisión final de la pasada: errores por modelo, cuota de Gemini, gasto
+    y calidad de citas (ver alertas.py). Va al final, cuando ya hay datos de
+    esta pasada, y nunca la rompe: si falla, se queda en el log."""
+    try:
+        from alertas import revisar_y_avisar
+        conn = conectar_db()
+        try:
+            return revisar_y_avisar(conn)
+        finally:
+            conn.close()
+    except Exception as e:
+        log.warning(f"Fase de alertas: no pude completarla ({e})")
+        return []
+
+
 def una_pasada(args) -> None:
     inicio = datetime.now()
     anio = inicio.year
@@ -536,6 +555,7 @@ def una_pasada(args) -> None:
 
     resultado = fase_agentes(config)
     auditorias = fase_auditorias(config)
+    fase_alertas()
 
     minutos = (datetime.now() - inicio).total_seconds() / 60
     resumen = (
