@@ -16,9 +16,11 @@ Los cuatro filtros:
      President, Chairman) — un director independiente comprando pesa menos
 
 El quinto filtro que teníamos diseñado (descartar compras cosméticas
-justo antes de una ampliación de capital) lo dejo pendiente a propósito:
-necesita datos de 8-K que todavía no ingiero. Lo documento como
-trabajo futuro en vez de fingir que ya está resuelto.
+justo antes de una ampliación de capital) sigue pendiente. Los datos ya
+se ingieren (Item 3.02 de los 8-K en ingesta_8k.py y shelf_activa del
+13D/G en ingesta_13dg.py) y llegan a los agentes como contexto, pero aquí
+no se usan todavía como filtro duro. Lo documento como trabajo futuro en
+vez de fingir que ya está resuelto.
 
 Cómo usarlo:
   # Todas las empresas activas con datos de mercado:

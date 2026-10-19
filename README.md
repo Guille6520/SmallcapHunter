@@ -164,16 +164,26 @@ python auditor.py --ticker XXXX     # audita cruzado: Claude revisa a Gemini y v
 
 Todo lo anterior encadenado, con los agentes analizando SOLO empresas
 con datos nuevos desde su último análisis, y tope + pausas para la
-cuota gratuita diaria de Gemini y el gasto en Claude:
+cuota gratuita diaria de Gemini (20 llamadas) y el gasto en Claude:
 
 ```bash
-python orquestador.py             # una pasada completa
-python orquestador.py --daemon    # una pasada cada 48h (scheduler_horas)
+python orquestador.py                 # una pasada completa
+python orquestador.py --solo-agentes  # salta la ingesta, solo la fase LLM
+python orquestador.py --daemon        # una pasada cada 48h (scheduler_horas)
 ```
+
+La fase de agentes decide por modelo, no por empresa: a un modelo le toca
+una empresa si nunca la analizó, si hay datos nuevos (un Form 4 de compra
+o un 8-K) o si su último análisis es de un protocolo anterior
+(`version_protocolo`, ver más abajo). Un modelo se retira del resto de la
+pasada tras 3 fallos seguidos (cuota agotada o proveedor caído), no al
+primero. Después corre una segunda fase que reintenta las auditorías que
+se quedaron sin guardar (JSON cortado, 503, cuota), con un tope de 3
+fallos por ticker en 7 días; los 429 de cuota no cuentan para ese tope.
 
 Si `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` están configurados, cada
 análisis del Detective o el Auditor manda un aviso a tu Telegram con el
-ticker, el veredicto y las citas verificadas. Sin configurar, todo
+ticker, el veredicto y las citas con soporte. Sin configurar, todo
 funciona igual — el aviso es cortesía, no dependencia.
 
 ### Dashboard
@@ -182,10 +192,40 @@ funciona igual — el aviso es cortesía, no dependencia.
 streamlit run dashboard.py
 ```
 
-Tres vistas: el embudo completo con el ranking de candidatas, la ficha
-de cada empresa (scores, insiders, revenue, MD&A, veredictos), y un
-chat con LLM que ve el mismo contexto que el Detective para conversar
-sobre cualquier candidata.
+Cinco vistas:
+
+- **Panorama:** el embudo completo y los últimos veredictos de los agentes.
+- **Candidatas:** ranking por score de Capa 2 y por veredicto.
+- **Empresa:** la ficha con scores, insiders, revenue, MD&A y el historial
+  de análisis del Detective y el Auditor. Cada análisis trae un
+  desplegable de citas: la cita original en inglés, su traducción (escrita
+  por el modelo, no verificada) y el resultado de la comprobación.
+- **Chat:** un LLM que ve el mismo contexto que el Detective para
+  conversar sobre cualquier candidata.
+- **Observabilidad:** coste, latencia y errores de cada llamada a un LLM,
+  y la calidad por modelo (ver abajo).
+
+### Observabilidad
+
+Cada llamada real a un modelo (Detective, Auditor, chat y resumen de
+negocio) se registra en la tabla `llm_calls` con los tokens reales que
+devuelve el proveedor, la latencia, el coste estimado y el error si lo
+hubo. De ahí sale la pestaña Observabilidad del dashboard:
+
+- **Costes y fiabilidad:** llamadas, tasa de éxito, coste por modelo y por
+  día, latencia (p50/p95) y los últimos errores.
+- **Calidad por modelo y protocolo:** qué parte de las citas de cada
+  modelo aparece literal en el documento y qué parte tiene soporte según
+  el verificador, cuántos análisis se marcan ALUCINACION y cuánto
+  coinciden Claude y Gemini. Se calcula sobre lo ya guardado, sin llamadas
+  extra a ningún LLM.
+
+Nació de una necesidad real: para decidir en sep-2026 si cambiar el
+modelo gratuito que fallaba, hubo que comprobar a mano el panel de cada
+proveedor. Con el registro, el mismo dato sale del propio sistema.
+También sirvió para ver cosas que a ojo no se veían, como que Claude
+cortaba el JSON del Auditor justo en el tope de tokens (`tokens_salida`
+igual al máximo en todas las llamadas fallidas).
 
 ### API (FastAPI)
 
@@ -213,7 +253,8 @@ pytest
 La suite (`tests/`) es toda offline — sin BD, sin API keys, sin red — así
 que corre igual en tu máquina que en CI (ver el badge arriba). Cubre la
 lógica pura del pipeline (normalización, filtros, scoring, regex del
-MD&A), el verificador de citas, la degradación del RAG cuando no hay
+MD&A), el verificador de citas (categorías y umbral de ALUCINACION), el
+reintento de auditorías, la degradación del RAG cuando no hay
 embeddings o falla la API, la orquestación del grafo de LangGraph
 (fan-out/fan-in, qué pasa si un modelo falla) y los endpoints de la API.
 
@@ -410,6 +451,20 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   cuánto coinciden Claude y Gemini, pero hay que mirarla. Falta avisar por
   Telegram cuando una métrica empeore (el declive de Nemotron en sep-2026
   se notó tarde, cuando ya fallaba)
+- **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
+  montado a mano en una máquina. Un compose con Postgres + pgvector y la
+  app permitiría levantarlo con un comando, y la CI podría construir la
+  imagen en cada push
+- **Demo pública de solo lectura** — el dashboard con datos congelados y
+  sin claves de ningún LLM (el chat y el botón de analizar gastan las
+  claves de quien lo despliega), en un servicio gratuito
+- **Tablas en el verificador de citas** — una cita real que resume una
+  tabla (p. ej. tres porcentajes de un 13D) puede quedar sin soporte si
+  sus cifras están lejos entre sí en el texto; hoy exige que estén a menos
+  de 40 tokens
+- **El estado `analizada` de `empresas`** — está en el esquema pero ningún
+  paso del pipeline lo escribe; usarlo (o quitarlo) para no depender de
+  inferir "analizada" desde la tabla de análisis
 - **Migraciones del esquema con Alembic** — hoy `schema.sql` solo sirve
   para crear la base desde cero, y cada cambio posterior (una columna,
   una tabla) se aplica a mano sobre la base que ya existe. Con
