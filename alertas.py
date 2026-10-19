@@ -34,6 +34,7 @@ import logging
 import argparse
 from dataclasses import dataclass
 
+import cuota_gemini
 from errores_llm import clasificar_error
 from verificador_citas import UMBRAL_CITAS_DEBILES
 
@@ -50,7 +51,7 @@ UMBRAL_TASA_ERROR = 0.25
 
 # Cuota gratuita diaria de gemini-2.5-flash (se renueva a medianoche, hora
 # del Pacífico). Si algún día se activa facturación, esta regla sobra.
-LIMITE_DIARIO_GEMINI = 20
+LIMITE_DIARIO_GEMINI = cuota_gemini.LIMITE_DIARIO_POR_DEFECTO
 AVISO_CUOTA_GEMINI = 18
 
 UMBRAL_COSTE_DIARIO_USD = 1.00
@@ -91,19 +92,10 @@ def leer_metricas(conn) -> dict:
                 categoria = clasificar_error(tipo_error)
                 m["por_categoria"][categoria] = m["por_categoria"].get(categoria, 0) + 1
 
-        # Las llamadas de "hoy" de Gemini, con el día del Pacífico (donde se
-        # reinicia su cuota). Las que dieron 429 no gastan cuota.
-        cur.execute(
-            """
-            select count(*) filter (where exito or coalesce(tipo_error, '') !~ '^(cuota_429|429)'),
-                   count(*) filter (where not exito and coalesce(tipo_error, '') ~ '^(cuota_429|429)')
-            from llm_calls
-            where modelo = 'gemini'
-              and (fecha at time zone 'America/Los_Angeles')::date
-                  = (now() at time zone 'America/Los_Angeles')::date
-            """
-        )
-        gemini_usadas_hoy, gemini_429_hoy = cur.fetchone()
+        # La cuenta de la cuota de Gemini de hoy vive en cuota_gemini.py (la
+        # comparte con el orquestador y el dashboard).
+        gemini_usadas_hoy = cuota_gemini.usadas_hoy(conn)
+        gemini_429_hoy = cuota_gemini.hubo_429_hoy(conn)
 
         cur.execute(
             """

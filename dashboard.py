@@ -847,6 +847,7 @@ def vista_observabilidad():
         "-- coste, latencia y errores del propio sistema, no de un panel externo."
     )
     bloque_alertas()
+    bloque_cuota_gemini()
 
     resumen = query_df("""
         select count(*) as llamadas,
@@ -947,6 +948,32 @@ def vista_observabilidad():
     st.divider()
     bloque_errores()
     bloque_calidad()
+
+
+@st.cache_data(ttl=120)
+def _cuota_gemini() -> tuple:
+    """(usadas hoy, momento de renovación en hora de Madrid), cacheado 2 min."""
+    import cuota_gemini
+    conn = conectar_db()
+    return cuota_gemini.usadas_hoy(conn), cuota_gemini.renovacion(conn)
+
+
+def bloque_cuota_gemini():
+    """Cuánta cuota gratuita de Gemini llevamos gastada hoy (20 peticiones al
+    día, se renueva a medianoche hora del Pacífico). Sale de llm_calls, así
+    que solo cuenta lo que hizo este sistema."""
+    import cuota_gemini
+    try:
+        usadas, renovacion = _cuota_gemini()
+    except Exception as e:
+        st.caption(f"No pude leer la cuota de Gemini: {e}")
+        return
+    limite = cuota_gemini.LIMITE_DIARIO_POR_DEFECTO
+    st.progress(
+        min(usadas / limite, 1.0),
+        text=f"Cuota gratuita de Gemini hoy: {usadas} de {limite} llamadas "
+             f"· se renueva el {renovacion:%d/%m a las %H:%M} (hora de Madrid)",
+    )
 
 
 @st.cache_data(ttl=120)

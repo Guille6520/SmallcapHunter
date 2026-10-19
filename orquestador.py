@@ -63,6 +63,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 from notificador_telegram import enviar_telegram
+import cuota_gemini
 from verificador_citas import VERSION_PROTOCOLO
 
 logging.basicConfig(
@@ -110,7 +111,7 @@ def leer_configuracion_orquestador(conn) -> dict:
         cur.execute(
             "select clave, valor from configuracion where clave in "
             "('score_minimo_llm', 'max_analisis_por_pasada', "
-            "'pausa_llm_segundos', 'scheduler_horas')"
+            "'pausa_llm_segundos', 'scheduler_horas', 'gemini_limite_diario')"
         )
         valores = dict(cur.fetchall())
         return {
@@ -118,6 +119,8 @@ def leer_configuracion_orquestador(conn) -> dict:
             "max_analisis": int(valores.get("max_analisis_por_pasada", 10)),
             "pausa_llm": int(valores.get("pausa_llm_segundos", 20)),
             "horas": int(valores.get("scheduler_horas", 48)),
+            # 0 = sin límite (cuenta de Gemini con facturación)
+            "gemini_limite": int(valores.get("gemini_limite_diario", cuota_gemini.LIMITE_DIARIO_POR_DEFECTO)),
         }
     finally:
         cur.close()
@@ -361,6 +364,20 @@ def auditorias_pendientes(conn, corte: int, limite: int) -> list:
     return list(por_ticker.items())
 
 
+def recortar_por_cuota_gemini(conn, pendientes: list, limite: int, coste) -> tuple:
+    """Deja solo lo que cabe en la cuota gratuita de Gemini que queda hoy.
+    limite 0 = sin límite. Devuelve (las_que_caben, las_aplazadas)."""
+    if not limite or not pendientes:
+        return pendientes, []
+    usadas = cuota_gemini.usadas_hoy(conn)
+    restantes = max(limite - usadas, 0)
+    caben, aplazadas = cuota_gemini.recortar_por_cuota(pendientes, restantes, coste)
+    log.info(f"Cuota de Gemini hoy: {usadas} de {limite} usadas, quedan {restantes}; entran {len(caben)} de {len(pendientes)}")
+    if aplazadas:
+        log.warning("Aplazo por cuota de Gemini: " + ", ".join(str(p[1]) if len(p) > 2 else str(p[0]) for p in aplazadas))
+    return caben, aplazadas
+
+
 def fase_auditorias(config: dict) -> dict:
     """
     Reintenta las auditorías que se quedaron sin hacer (ver
@@ -375,11 +392,18 @@ def fase_auditorias(config: dict) -> dict:
     conn = conectar_db()
     try:
         pendientes = auditorias_pendientes(conn, config["corte"], config["max_analisis"])
+        pendientes, aplazadas = recortar_por_cuota_gemini(
+            conn, pendientes, config.get("gemini_limite", 0),
+            lambda p: cuota_gemini.llamadas_gemini_de_una_auditoria(p[1]),
+        )
     finally:
         conn.close()
 
     if not pendientes:
-        log.info("Fase de auditorías: ninguna auditoría pendiente")
+        if aplazadas:
+            log.warning(f"Fase de auditorías: {len(aplazadas)} pendientes, sin cuota de Gemini hoy — para la próxima pasada")
+        else:
+            log.info("Fase de auditorías: ninguna auditoría pendiente")
         return {"auditadas": 0, "fallos": 0}
 
     log.info(f"Fase de auditorías: {len(pendientes)} empresas con auditorías pendientes")
@@ -420,10 +444,20 @@ def fase_agentes(config: dict) -> dict:
         pendientes = empresas_que_necesitan_analisis(
             conn, config["corte"], config["max_analisis"]
         )
+        pendientes, aplazadas = recortar_por_cuota_gemini(
+            conn, pendientes, config.get("gemini_limite", 0),
+            lambda p: cuota_gemini.llamadas_gemini_de_una_empresa(p[3]),
+        )
     finally:
         conn.close()
 
     if not pendientes:
+        if aplazadas:
+            log.warning(
+                f"Fase de agentes: {len(aplazadas)} empresas pendientes, pero la cuota gratuita de "
+                "Gemini de hoy no da para ninguna — las dejo para la próxima pasada"
+            )
+            return {"analizadas": 0, "fallos": 0, "aplazadas_por_cuota": len(aplazadas)}
         log.info("Fase de agentes: ninguna empresa necesita análisis nuevo — nada que hacer")
         return {"analizadas": 0, "fallos": 0}
 
@@ -499,7 +533,10 @@ def fase_agentes(config: dict) -> dict:
             )
             break
 
-    return {"analizadas": analizadas, "fallos": fallos}
+    resultado = {"analizadas": analizadas, "fallos": fallos}
+    if aplazadas:
+        resultado["aplazadas_por_cuota"] = len(aplazadas)
+    return resultado
 
 
 def fase_alertas() -> list:
@@ -563,6 +600,7 @@ def una_pasada(args) -> None:
         f"Empresas analizadas por los agentes: {resultado['analizadas']}"
         + (f" (con fallos: {resultado['fallos']})" if resultado["fallos"] else "")
         + (f"\nAuditorías recuperadas: {auditorias['auditadas']}" if auditorias["auditadas"] else "")
+        + (f"\nAplazadas por la cuota de Gemini: {resultado['aplazadas_por_cuota']}" if resultado.get("aplazadas_por_cuota") else "")
     )
     log.info(resumen.replace("🤖 ", ""))
     # El detalle de cada veredicto ya llegó por Telegram desde los

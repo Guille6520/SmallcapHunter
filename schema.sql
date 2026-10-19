@@ -579,7 +579,9 @@ insert into configuracion (clave, valor, notas) values
     ('max_analisis_por_pasada', '10',
      'Tope de empresas que el orquestador analiza con LLM por pasada — protege la cuota gratuita diaria de Gemini y el gasto en Claude'),
     ('pausa_llm_segundos', '20',
-     'Pausa entre analisis LLM del orquestador, por los limites por minuto de los tiers gratuitos');
+     'Pausa entre analisis LLM del orquestador, por los limites por minuto de los tiers gratuitos'),
+    ('gemini_limite_diario', '20',
+     'Peticiones gratuitas al dia de Gemini. El orquestador recorta la pasada a lo que cabe en la cuota que queda hoy. 0 = sin limite (cuenta con facturacion). Si la clave no existe en una base ya creada, usa 20');
 
 
 -- Nota sobre el trigger que ya no existe: la primera versión tenía una
