@@ -1,5 +1,5 @@
 """
-seguimiento_senales.py — la cartera de señales: a qué precio estaba cada
+seguimiento_senales.py — la cartera de análisis: a qué precio estaba cada
 empresa cuando los agentes dijeron MUY_INTERESANTE, y cómo evoluciona después.
 
 USO PERSONAL, apagado por defecto (ver activado()): es una ayuda para quien
@@ -10,26 +10,26 @@ MOSTRAR_SEGUIMIENTO=1 en el .env.
 La tesis del proyecto no es de trading: son empresas que, si el análisis acierta,
 deberían crecer y multiplicar su valor a lo largo de años. Por eso el horizonte
 que se sigue es de 12 meses (y más), y lo que se guarda y se enseña es lo
-sencillo: el precio el día de la señal, el precio de hoy, cuánto ha cambiado, el
+sencillo: el precio el día del análisis, el precio de hoy, cuánto ha cambiado, el
 máximo y el mínimo que tuvo desde entonces y cuánto lleva del año. No hace falta
 ser experto en finanzas para leerlo.
 
 Para quien quiera la lectura más exigente (si lo hace mejor o peor que el mercado
 en el mismo periodo), también se calcula el exceso sobre el IWM (Russell 2000),
-pero es secundario: a unas semanas de una señal no dice casi nada de una tesis a
+pero es secundario: a unas semanas de un análisis no dice casi nada de una tesis a
 un año.
 
 Cómo se mide (y los límites):
-  - Cada análisis del Detective es una señal: (empresa, modelo, veredicto, fecha).
+  - Cada análisis del Detective cuenta: (empresa, modelo, veredicto, fecha).
     Se usa el veredicto REAL del modelo (veredicto_preliminar), no la etiqueta
     ALUCINACION que en el protocolo 1 lo sustituía.
-  - La cartera cuenta UNA señal por empresa: la primera vez que algún modelo la
+  - La cartera cuenta UN análisis por empresa: la primera vez que algún modelo la
     marcó MUY_INTERESANTE. Los re-análisis posteriores no la duplican.
-  - Precio de la señal: el último cierre disponible en el día del análisis o antes.
+  - Precio del análisis: el último cierre disponible en el día del análisis o antes.
     Los precios están ajustados por splits y dividendos.
   - Las empresas que dejan de cotizar sin precio en Yahoo no se pueden seguir y
     quedan fuera (sesgo optimista): se cuentan y se avisa.
-  - Una señal de hace unos días tiene un recorrido que no significa nada todavía:
+  - Un análisis de hace unos días tiene un recorrido que no significa nada todavía:
     se enseñan los días que lleva para que se vea.
 
 Cómo usarlo:
@@ -63,7 +63,7 @@ PAUSA_ENTRE_TICKERS = 0.6  # misma prudencia con Yahoo que en mercado_yfinance.p
 
 HORIZONTE_DIAS = 365  # el plazo de la tesis: un año
 
-# Horizontes cortos para la lectura avanzada, en días de mercado desde la señal.
+# Horizontes cortos para la lectura avanzada, en días de mercado desde el análisis.
 HORIZONTES = {"1s": 5, "1m": 21, "3m": 63}
 MIN_DIAS_MERCADO_AVANZADO = 5  # menos recorrido que esto no entra en las estadísticas
 
@@ -87,15 +87,15 @@ create table if not exists precios_seguimiento (
 def seguimiento_de_una_senal(fecha_senal: date, precios: list, bench: list = None):
     """
     precios y bench: listas [(fecha, cierre_ajustado)] ordenadas por fecha.
-    Devuelve None si no hay ningún precio en el día de la señal o antes. Si no, un
-    dict con el precio de la señal, el de hoy, el retorno, el recorrido (máximo y
-    mínimo desde la señal) y la serie de precios con base 100 en el día de la señal;
+    Devuelve None si no hay ningún precio en el día del análisis o antes. Si no, un
+    dict con el precio del análisis, el de hoy, el retorno, el recorrido (máximo y
+    mínimo desde el análisis) y la serie de precios con base 100 en el día del análisis;
     y, si hay benchmark, el exceso sobre el IWM.
     """
     if not precios:
         return None
     fechas = [f for f, _ in precios]
-    i0 = bisect_right(fechas, fecha_senal) - 1  # último cierre en el día de la señal o antes
+    i0 = bisect_right(fechas, fecha_senal) - 1  # último cierre en el día del análisis o antes
     if i0 < 0:
         return None
 
@@ -155,7 +155,7 @@ def seguimiento_de_una_senal(fecha_senal: date, precios: list, bench: list = Non
 def primeras_senales(senales: list, veredicto: str = "MUY_INTERESANTE",
                      modelos=("claude", "gemini")) -> list:
     """
-    La cartera: UNA señal por empresa, la primera vez que algún modelo le dio ese
+    La cartera: UN análisis por empresa, la primera vez que algún modelo le dio ese
     veredicto. Guarda qué modelos se lo han dado alguna vez (campo "modelos") y si
     los dos (campo "ambos"). Los re-análisis posteriores no duplican la empresa.
     """
@@ -171,7 +171,7 @@ def primeras_senales(senales: list, veredicto: str = "MUY_INTERESANTE",
         dieron = sorted({s["modelo"] for s in ss})
         cartera.append({
             "ticker": primera["ticker"], "empresa_id": empresa_id,
-            "modelo": "primera señal", "veredicto": veredicto,
+            "modelo": "primer análisis", "veredicto": veredicto,
             "fecha": primera["fecha"], "modelos": dieron,
             "ambos": all(m in dieron for m in modelos),
         })
@@ -180,7 +180,7 @@ def primeras_senales(senales: list, veredicto: str = "MUY_INTERESANTE",
 
 def senales_de_consenso(senales: list, modelos=("claude", "gemini")) -> list:
     """
-    Señales a nivel de EMPRESA para la lectura avanzada: toma el último análisis
+    Análisis a nivel de EMPRESA para la lectura avanzada: toma el último análisis
     de cada uno de los dos modelos y las agrupa en "ambos MUY_INTERESANTE", "uno
     solo" o "ninguno". La fecha es la del más reciente de los dos: es cuando ya
     existía el consenso. Solo empresas con análisis de los dos modelos.
@@ -214,7 +214,7 @@ def senales_de_consenso(senales: list, modelos=("claude", "gemini")) -> list:
 
 
 def seguimiento_de_todas(senales: list, precios_por_ticker: dict) -> tuple:
-    """Aplica seguimiento_de_una_senal a cada señal. Devuelve
+    """Aplica seguimiento_de_una_senal a cada análisis. Devuelve
     (seguimientos, sin_precios, sin_referencia): las que se pudieron medir, las
     de empresas sin precios en Yahoo y las que no tienen precio en su día."""
     bench = precios_por_ticker.get(BENCHMARK, [])
@@ -233,16 +233,16 @@ def seguimiento_de_todas(senales: list, precios_por_ticker: dict) -> tuple:
 
 
 def _con_recorrido(medidas: list) -> list:
-    """Para las estadísticas: solo señales con unos días de recorrido y con
+    """Para las estadísticas: solo análisis con unos días de recorrido y con
     benchmark. Con un día de precio el exceso sería 0 por construcción."""
     return [m for m in medidas
             if m["dias_mercado"] >= MIN_DIAS_MERCADO_AVANZADO and m["exceso"] is not None]
 
 
 def resumen_por_grupo(medidas: list, clave="veredicto") -> list:
-    """Lectura avanzada: una fila por grupo con cuántas señales, cuánto llevan y
+    """Lectura avanzada: una fila por grupo con cuántos análisis, cuánto llevan y
     cómo van frente al IWM (media, mediana y % que lo bate), más el exceso a 1
-    semana, 1 mes y 3 meses con el número de señales que ya llegaron a ese horizonte."""
+    semana, 1 mes y 3 meses con el número de análisis que ya llegaron a ese horizonte."""
     grupos = {}
     for m in _con_recorrido(medidas):
         grupos.setdefault(m[clave], []).append(m)
@@ -269,7 +269,7 @@ def resumen_por_grupo(medidas: list, clave="veredicto") -> list:
 
 def curva_media_por_grupo(medidas: list, clave="veredicto", min_senales=5) -> list:
     """Lectura avanzada: [(grupo, día, exceso medio, n)] para dibujar el recorrido
-    frente al IWM. No se pinta un punto con menos de min_senales señales."""
+    frente al IWM. No se pinta un punto con menos de min_senales análisis."""
     puntos = {}
     for m in _con_recorrido(medidas):
         for dia, exceso in m["curva"]:
@@ -294,7 +294,7 @@ def asegurar_esquema(conn):
 
 
 def leer_senales(conn) -> list:
-    """Una señal por análisis del Detective, con el veredicto real del modelo."""
+    """Un registro por análisis del Detective, con el veredicto real del modelo."""
     cur = conn.cursor()
     try:
         cur.execute(
@@ -334,8 +334,8 @@ def leer_precios(conn, tickers) -> dict:
 
 
 def actualizar_precios(conn, senales: list) -> dict:
-    """Baja de Yahoo lo que falta de cada ticker con señales (y del IWM), desde
-    una semana antes de su primera señal, y lo guarda. Un ticker que falla no
+    """Baja de Yahoo lo que falta de cada ticker con análisis (y del IWM), desde
+    una semana antes de su primer análisis, y lo guarda. Un ticker que falla no
     tumba a los demás. Devuelve {"actualizados": n, "sin_datos": [tickers]}."""
     import yfinance as yf
 
@@ -413,19 +413,19 @@ def fase_seguimiento(conn=None) -> dict:
         try:
             asegurar_esquema(conn)
             resultado = actualizar_precios(conn, leer_senales(conn))
-            log.info(f"Seguimiento de señales: {resultado['actualizados']} tickers actualizados, "
+            log.info(f"Seguimiento de análisis: {resultado['actualizados']} tickers actualizados, "
                      f"{len(resultado['sin_datos'])} sin datos")
             return resultado
         finally:
             if propia:
                 conn.close()
     except Exception as e:
-        log.warning(f"Seguimiento de señales: no pude actualizar los precios ({e})")
+        log.warning(f"Seguimiento de análisis: no pude actualizar los precios ({e})")
         return {"actualizados": 0, "sin_datos": []}
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Cartera de señales MUY_INTERESANTE y su evolución")
+    parser = argparse.ArgumentParser(description="Cartera de análisis MUY_INTERESANTE y su evolución")
     parser.add_argument("--actualizar", action="store_true", help="baja primero los precios nuevos de Yahoo")
     args = parser.parse_args()
     logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(levelname)s  %(message)s", datefmt="%H:%M:%S")
@@ -441,9 +441,9 @@ def main():
 
     print(f"\nCartera de MUY_INTERESANTE: {len(datos['cartera'])} empresas "
           f"({len(datos['sin_precios'])} sin precios en Yahoo). Precios hasta {datos['precios_hasta']}.")
-    print(f"{'ticker':7} {'señal':11} {'precio señal':>13} {'precio hoy':>11} {'cambio':>8} {'días':>5} {'del año':>8}")
+    print(f"{'ticker':7} {'análisis':11} {'precio análisis':>15} {'precio hoy':>11} {'cambio':>8} {'días':>5} {'del año':>8}")
     for c in sorted(datos["cartera"], key=lambda c: c["fecha"]):
-        print(f"{c['ticker']:7} {c['fecha']:%d/%m/%Y}  {c['precio_senal']:12.2f} {c['precio_actual']:11.2f} "
+        print(f"{c['ticker']:7} {c['fecha']:%d/%m/%Y}  {c['precio_senal']:14.2f} {c['precio_actual']:11.2f} "
               f"{100 * c['retorno']:+7.1f}% {c['dias_calendario']:5d} {100 * c['progreso_anio']:7.0f}%")
 
 

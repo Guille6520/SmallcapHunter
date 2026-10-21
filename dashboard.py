@@ -1291,20 +1291,20 @@ def _seguimiento() -> dict:
 
 def vista_seguimiento():
     """
-    La cartera de señales: cada empresa que algún agente marcó MUY_INTERESANTE,
+    La cartera de análisis: cada empresa que algún agente marcó MUY_INTERESANTE,
     con el precio que tenía ese día y cómo evoluciona después. La tesis es de
     largo plazo (que la empresa crezca y su acción se multiplique a lo largo de
-    un año o más), así que lo que se enseña es sencillo: precio en la señal,
+    un año o más), así que lo que se enseña es sencillo: precio del análisis,
     precio hoy, recorrido y cuánto lleva del año. La comparación con el
     Russell 2000, que sí es una lectura de finanzas, queda al fondo.
     """
     import seguimiento_senales as ss
 
-    st.subheader("🎯 Seguimiento de señales")
+    st.subheader("🎯 Seguimiento de análisis")
     st.caption(
         "Cada empresa que algún agente marcó como MUY_INTERESANTE, con el precio que tenía el día "
-        "de la señal y cómo evoluciona después. La tesis es a un año o más: una empresa que se "
-        "duplica es x2.0. Se cuenta una sola vez por empresa, la primera vez que salió."
+        "del análisis y cómo evoluciona después. La tesis es a un año o más: una empresa que se "
+        "duplica es x2.0. Se cuenta una sola vez por empresa, la primera vez que salió MUY_INTERESANTE."
     )
 
     try:
@@ -1323,7 +1323,7 @@ def vista_seguimiento():
     cartera = sorted(datos["cartera"], key=lambda c: c["fecha"])
     c1, c2, c3 = st.columns(3)
     c1.metric("Empresas en la cartera", f"{len(cartera)}")
-    c2.metric("Señal más antigua", f"{max(c['dias_calendario'] for c in cartera)} de 365 días")
+    c2.metric("Más antiguo (plazo 365 d)", f"{max(c['dias_calendario'] for c in cartera)} días")
     c3.metric("Precios hasta", f"{datos['precios_hasta']:%d/%m/%Y}")
     if datos["sin_precios"]:
         st.warning(
@@ -1335,8 +1335,8 @@ def vista_seguimiento():
         return "los dos" if c["ambos"] else c["modelos"][0]
 
     tabla = pd.DataFrame([{
-        "ticker": c["ticker"], "empresa": c.get("nombre"), "señal": c["fecha"], "la dieron": modelos(c),
-        "precio en la señal": c["precio_senal"], "precio hoy": c["precio_actual"],
+        "ticker": c["ticker"], "empresa": c.get("nombre"), "análisis": c["fecha"], "la dieron": modelos(c),
+        "precio del análisis": c["precio_senal"], "precio hoy": c["precio_actual"],
         "cambio": 100 * c["retorno"], "veces": c["multiplo"],
         "máx.": 100 * c["max_subida"], "mín.": 100 * c["max_caida"],
         "días": c["dias_calendario"], "del año": 100 * c["progreso_anio"],
@@ -1345,20 +1345,20 @@ def vista_seguimiento():
     st.dataframe(
         tabla, use_container_width=True, hide_index=True,
         column_config={
-            "precio en la señal": st.column_config.NumberColumn(format="$%.2f"),
+            "precio del análisis": st.column_config.NumberColumn(format="$%.2f"),
             "precio hoy": st.column_config.NumberColumn(format="$%.2f"),
             "cambio": pct, "máx.": pct, "mín.": pct,
-            "veces": st.column_config.NumberColumn("veces", format="x%.2f", help="Precio de hoy dividido entre el de la señal"),
+            "veces": st.column_config.NumberColumn("veces", format="x%.2f", help="Precio de hoy dividido entre el del análisis"),
             "del año": st.column_config.ProgressColumn("del año", min_value=0, max_value=100, format="%d%%",
-                                                       help="Cuánto lleva de los 12 meses desde la señal"),
+                                                       help="Cuánto lleva de los 12 meses desde el análisis"),
         },
     )
     st.caption(
-        "Máx. y mín.: lo más alto y lo más bajo que llegó a cotizar desde la señal, respecto al precio de ese "
-        "día. Una señal de hace un par de días todavía no significa nada: mira la columna «del año»."
+        "Máx. y mín.: lo más alto y lo más bajo que llegó a cotizar desde el análisis, respecto al precio de ese "
+        "día. Un análisis de hace un par de días todavía no significa nada: mira la columna «del año»."
     )
 
-    st.markdown("**Cómo evoluciona cada una desde su señal** (100 = el precio el día de la señal)")
+    st.markdown("**Cómo evoluciona cada una desde su análisis** (100 = el precio el día del análisis)")
     lineas = pd.DataFrame([
         {"ticker": c["ticker"], "dia": d, "indice": v} for c in cartera for d, v in c["serie"]
     ])
@@ -1367,9 +1367,9 @@ def vista_seguimiento():
     )
     lineas["resaltada"] = lineas["ticker"] == destacada
     base = alt.Chart(lineas).encode(
-        x=alt.X("dia:Q", title="días desde la señal (365 = un año)",
+        x=alt.X("dia:Q", title="días desde el análisis (365 = un año)",
                 scale=alt.Scale(domain=[0, 365]), axis=alt.Axis(values=[0, 91, 182, 273, 365])),
-        y=alt.Y("indice:Q", title="precio (100 = día de la señal)", scale=alt.Scale(zero=False)),
+        y=alt.Y("indice:Q", title="precio (100 = día del análisis)", scale=alt.Scale(zero=False)),
         detail="ticker:N",
         tooltip=[alt.Tooltip("ticker:N"), alt.Tooltip("dia:Q", title="día"),
                  alt.Tooltip("indice:Q", title="índice", format=".0f")],
@@ -1397,30 +1397,30 @@ def vista_seguimiento():
             color="#eb6834").encode(x="x:T")
         mostrar_grafico(alt.layer(precio, nivel, dia), alto=240)
         st.caption(
-            f"La línea naranja marca la señal ({c['fecha']:%d/%m/%Y}, a ${c['precio_senal']:.2f}). "
-            f"Hoy: ${c['precio_actual']:.2f} ({c['multiplo']:.2f} veces el precio de la señal)."
+            f"La línea naranja marca el análisis ({c['fecha']:%d/%m/%Y}, a ${c['precio_senal']:.2f}). "
+            f"Hoy: ${c['precio_actual']:.2f} ({c['multiplo']:.2f} veces el precio del análisis)."
         )
 
     with st.expander("Lectura avanzada: ¿lo hace mejor o peor que el mercado? (Russell 2000)"):
         st.caption(
-            "Compara cada señal con el IWM (ETF del Russell 2000) en el mismo periodo exacto: el exceso es "
-            "el retorno de la empresa menos el del IWM. A unas semanas de una señal esto dice poco de una tesis "
+            "Compara cada análisis con el IWM (ETF del Russell 2000) en el mismo periodo exacto: el exceso es "
+            "el retorno de la empresa menos el del IWM. A unas semanas de un análisis esto dice poco de una tesis "
             "a un año; se enseña por completitud y porque con el tiempo será la lectura más honesta."
         )
         modo = st.radio(
-            "Qué señales", ["Por veredicto de cada modelo", "Consenso Claude + Gemini (último análisis)"],
+            "Qué análisis", ["Por veredicto de cada modelo", "Consenso Claude + Gemini (último análisis)"],
             horizontal=True,
         )
         medidas = datos["consenso"] if modo.startswith("Consenso") else datos["por_senal"]
         resumen = pd.DataFrame(ss.resumen_por_grupo(medidas))
         if resumen.empty:
-            st.info("Todavía no hay señales con unos días de recorrido para comparar.")
+            st.info("Todavía no hay análisis con unos días de recorrido para comparar.")
         else:
             def pct_col(col):
                 return resumen[col].map(lambda x: None if x is None or pd.isna(x) else 100 * x)
 
             avanzada = pd.DataFrame({
-                "grupo": resumen["veredicto"], "señales": resumen["n"],
+                "grupo": resumen["veredicto"], "análisis": resumen["n"],
                 "días (media)": resumen["dias_medios"].round(0),
                 "exceso medio": pct_col("exceso_medio"), "exceso mediano": pct_col("exceso_mediano"),
                 "bate al IWM": 100 * resumen["pct_bate_iwm"],
