@@ -11,3 +11,6 @@ __pycache__/
 datos/
 *.csv.bak
 
+
+# Pruebas manuales de auditores (prompts con texto de la SEC y la clave; no se suben)
+pruebas_auditor/

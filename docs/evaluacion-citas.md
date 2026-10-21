@@ -110,9 +110,35 @@ soporte parecido al de los Detectives (95 % y 94 %).
 
 Los Detectives, por su parte, reparten igual sus veredictos (9
 MUY_INTERESANTE y 16 INTERESANTE cada uno) y coinciden en 13 de 25
-empresas. Que Claude empeore siempre apunta a un sesgo del modelo como
-auditor y no a una diferencia real entre los análisis, pero con estos datos
-no se puede afirmar.
+empresas. Eso deja dos explicaciones para que Claude empeore siempre: que
+los análisis de Gemini sean peores, o que Claude, como auditor, empeore casi
+todo lo que le llega.
+
+### El experimento que las separa
+
+Para decidirlo, el mismo Auditor de Claude, con el mismo prompt, revisó
+también los análisis de **Claude** (`experimento_auditor.py`, 24 empresas; la
+25.ª falló y no se contó). El resultado, guardado en
+`resultados_experimento_auditor.csv`:
+
+| Claude audita a... | Empeora el veredicto | Dice que la tesis no se sostiene |
+|---|---|---|
+| Gemini (producción) | 25 de 25 | — |
+| Claude (experimento) | 24 de 24 | 24 de 24 |
+
+Si fueran los análisis de Gemini los peores, Claude no habría empeorado
+también los suyos. Es el auditor el que empeora todo, y de forma tan
+uniforme que su veredicto casi no distingue unos análisis de otros.
+
+Un detalle más: de esos 24, en 8 el veredicto del Auditor era el mismo que el
+del Detective (INTERESANTE a INTERESANTE) y aun así el campo
+`relacion_con_veredicto_detective` decía EMPEORA. La etiqueta que da el modelo
+no es fiable; la relación se puede calcular en código comparando los dos
+veredictos.
+
+Qué NO prueba: que el Auditor de Gemini sea el bueno (confirma, empeora y
+mejora, pero no sabemos si acierta), ni que los Detectives acierten. Solo que
+el Auditor de Claude, tal como está, no aporta información.
 
 ## Límites
 

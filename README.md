@@ -478,9 +478,13 @@ De las 456 citas del protocolo 2, solo 21 (el 5 %) no tienen soporte: 7 de
 - **Claude y Gemini coinciden en el veredicto en 13 de 25 empresas (52 %).**
   Los dos dan MUY_INTERESANTE a tres (ADTN, HROW y VITL), y al menos uno a
   quince.
-- **El Auditor de Claude empeoró el veredicto en las 25 auditorías.** El de
-  Gemini confirmó 9, empeoró 12 y mejoró 4. Puede ser rigor o puede ser un
-  sesgo del modelo; con estos datos no se distingue (ver el roadmap).
+- **El Auditor de Claude empeoró el veredicto en las 25 auditorías** (a
+  Gemini); el de Gemini confirmó 9, empeoró 12 y mejoró 4. Para separar rigor
+  de sesgo, hice que Claude auditara también sus propios análisis
+  (`experimento_auditor.py`): empeoró 24 de 24 y dijo que la tesis no se
+  sostenía en los 24. Es decir, el sesgo es del Auditor de Claude, no de la
+  calidad de cada Detective. Además, en 8 de esas 24 el veredicto no cambió y
+  aun así lo etiquetó como "EMPEORA": esa etiqueta no es fiable.
 - **El coste real** desde el 14-oct es de 1,60 $ en 160 llamadas (Claude y
   Gemini), con la migración, las pruebas y el chat incluidos: unos 2 céntimos por llamada
   de Claude. Gemini va en el tier gratuito.
@@ -551,10 +555,12 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   reenvía lo que siga activo (no recuerda lo ya avisado). Faltaría
   guardarlos en la tabla `configuracion`, no repetir un aviso ya enviado y
   una alerta de "el orquestador lleva días sin correr"
-- **Calibrar al Auditor** — el de Claude empeoró el veredicto en 25 de 25
-  auditorías y el de Gemini solo en 12 de 25 (ver Resultados). Habría que
-  separar rigor de sesgo: auditar con cada modelo los mismos análisis y
-  comparar, o darle casos de control con veredicto conocido
+- **Corregir al Auditor de Claude** — empeora el veredicto casi siempre, también
+  el de sus propios análisis (ver Resultados), así que su "EMPEORA" no
+  informa. Lo más barato: calcular la relación con el veredicto del Detective
+  en código a partir de los dos veredictos, en vez de fiarse de la etiqueta
+  del modelo, y probar un prompt que le pida justificar qué cambiaría el
+  veredicto antes de bajarlo
 - **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
   montado a mano en una máquina. Un compose con Postgres + pgvector y la
   app permitiría levantarlo con un comando, y la CI podría construir la
