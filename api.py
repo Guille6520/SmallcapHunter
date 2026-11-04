@@ -51,6 +51,9 @@ logging.basicConfig(
 )
 log = logging.getLogger(__name__)
 
+# Los dos votos ciegos que existen. Lo que llegue por la API se valida contra esto.
+MODELOS_PERMITIDOS = ("claude", "gemini")
+
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "127.0.0.1"),
     "port":     os.getenv("DB_PORT", "5432"),
@@ -123,7 +126,10 @@ def health():
             cur.close()
         return {"status": "ok", "db": "ok"}
     except psycopg2.Error as e:
-        raise HTTPException(status_code=503, detail=f"BD no disponible: {e}")
+        # El detalle (host, usuario, puerto) se queda en el log del servidor: no
+        # se lo doy a quien consulta el endpoint.
+        log.error(f"/health: la base de datos no responde: {e}")
+        raise HTTPException(status_code=503, detail="BD no disponible")
 
 
 @app.get("/candidatas", response_model=list[CandidataResumen])
@@ -272,7 +278,16 @@ def analizar_candidata(ticker: str, modelos: Optional[str] = None):
     complejidad de una cola de tareas.
     """
     ticker = ticker.upper()
-    lista_modelos = modelos.split(",") if modelos else ["claude", "gemini"]
+    lista_modelos = [m.strip() for m in modelos.split(",") if m.strip()] if modelos else ["claude", "gemini"]
+    # Solo los dos modelos que existen: un nombre cualquiera iría a llamar_modelo, que
+    # lanza un error, y cada petición con un nombre inventado costaría una conexión
+    # a la base de datos y una ejecución del grafo.
+    desconocidos = [m for m in lista_modelos if m not in MODELOS_PERMITIDOS]
+    if desconocidos or not lista_modelos:
+        raise HTTPException(
+            status_code=400,
+            detail=f"modelos no válidos: {desconocidos or modelos!r}. Usa claude, gemini o ambos separados por coma.",
+        )
 
     conn = psycopg2.connect(**DB_CONFIG)
     conn.autocommit = False

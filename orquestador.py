@@ -98,6 +98,20 @@ FALLOS_SEGUIDOS_PARA_RETIRAR = 3
 # roto (o cuyo texto desborda el contexto) gastaría llamadas en cada pasada.
 MAX_FALLOS_AUDITORIA_7D = 3
 
+# Lo mismo para el Detective: tras este número de fallos de un MISMO modelo con un
+# mismo ticker en los últimos 7 días, dejo de reintentar. Sin tope, un ticker cuyo
+# texto desborda el contexto o cuyo JSON sale siempre roto gastaría una llamada de
+# pago en cada pasada, para siempre. Los 429 y los 503 no cuentan (ver abajo).
+MAX_FALLOS_DETECTIVE_7D = 3
+
+# Tiempo máximo de un subproceso. Sin esto, un script colgado (un yfinance que no
+# contesta, una descarga de la SEC que se queda a medias) bloquea la pasada, y con
+# --daemon el sistema entero, para siempre y sin avisar. Los topes son holgados a
+# propósito: la ingesta de mercado en lote y el XBRL completo tardan, pero no horas
+# sin parar. Al saltar el tope, el subproceso se mata y el paso cuenta como fallido.
+TIMEOUT_PASO_SEGUNDOS = 4 * 3600
+TIMEOUT_GRAFO_SEGUNDOS = 20 * 60    # un ticker: dos Detectives y las auditorías
+
 
 def conectar_db():
     conn = psycopg2.connect(**DB_CONFIG)
@@ -137,14 +151,18 @@ def ejecutar_paso(nombre: str, argumentos: list, critico: bool) -> bool:
     log.info(f">>> {nombre}: {' '.join(argumentos)}")
     inicio = time.time()
 
-    resultado = subprocess.run(comando)
+    try:
+        codigo = subprocess.run(comando, timeout=TIMEOUT_PASO_SEGUNDOS).returncode
+    except subprocess.TimeoutExpired:
+        log.error(f">>> {nombre}: pasó de {TIMEOUT_PASO_SEGUNDOS // 3600} h sin terminar — lo mato")
+        codigo = "timeout"
     minutos = (time.time() - inicio) / 60
 
-    if resultado.returncode != 0:
+    if codigo != 0:
         if critico:
-            log.error(f">>> {nombre} FALLÓ (código {resultado.returncode}) — aborto la pasada")
+            log.error(f">>> {nombre} FALLÓ (código {codigo}) — aborto la pasada")
             return False
-        log.warning(f">>> {nombre} falló (código {resultado.returncode}) — sigo, no es crítico")
+        log.warning(f">>> {nombre} falló (código {codigo}) — sigo, no es crítico")
         return True
 
     log.info(f">>> {nombre} terminado en {minutos:.1f} min")
@@ -170,7 +188,15 @@ def ejecutar_grafo_paso(ticker: str, modelos: list) -> dict:
     log.info(f">>> grafo capa3 {ticker}: modelos={modelos}")
     inicio = time.time()
 
-    resultado = subprocess.run(comando, capture_output=True, text=True)
+    try:
+        resultado = subprocess.run(comando, capture_output=True, text=True, timeout=TIMEOUT_GRAFO_SEGUNDOS)
+    except subprocess.TimeoutExpired:
+        # Mismo tratamiento que un fallo del grafo: asumo que no salió ningún modelo
+        # y la pasada sigue con la siguiente empresa en vez de quedarse colgada.
+        log.error(f">>> grafo capa3 {ticker}: pasó de {TIMEOUT_GRAFO_SEGUNDOS // 60} min — lo mato")
+        exitos = {modelo: False for modelo in modelos}
+        exitos["auditorias_guardadas"] = 0
+        return exitos
     minutos = (time.time() - inicio) / 60
 
     salida = resultado.stdout or ""
@@ -259,18 +285,24 @@ def empresas_que_necesitan_analisis(conn, corte: int, limite: int) -> list:
             cross join (values ('claude'), ('gemini')) as m(modelo)
             left join detectives d
               on d.empresa_id = c.id and d.modelo_llm = m.modelo
-            where d.ultima is null
-               or d.version < %s
-               or exists (select 1 from eventos_8k ev
-                          where ev.empresa_id = c.id
-                            and ev.fecha_registro > d.ultima)
-               or exists (select 1 from insider_transactions it
-                          where it.empresa_id = c.id
-                            and it.tipo_transaccion = 'P'
-                            and it.fecha_registro > d.ultima)
+            where (d.ultima is null
+                   or d.version < %s
+                   or exists (select 1 from eventos_8k ev
+                              where ev.empresa_id = c.id
+                                and ev.fecha_registro > d.ultima)
+                   or exists (select 1 from insider_transactions it
+                              where it.empresa_id = c.id
+                                and it.tipo_transaccion = 'P'
+                                and it.fecha_registro > d.ultima))
+              and (select count(*) from llm_calls l
+                   where l.origen = 'detective' and not l.exito
+                     and l.modelo = m.modelo
+                     and coalesce(l.tipo_error, '') !~ '^(cuota_429|sobrecarga_503|429|50[34]|529)'
+                     and l.ticker = c.ticker
+                     and l.fecha > now() - interval '7 days') < %s
             order by c.score desc, c.id
             """,
-            (corte, VERSION_PROTOCOLO),
+            (corte, VERSION_PROTOCOLO, MAX_FALLOS_DETECTIVE_7D),
         )
         filas = cur.fetchall()
     finally:
@@ -605,6 +637,10 @@ def una_pasada(args) -> None:
 
         for nombre, argumentos, critico in pasos:
             if not ejecutar_paso(nombre, argumentos, critico):
+                # Antes el aborto solo quedaba en el log: con --daemon nadie lo veía y
+                # el sistema parecía vivo sin haber analizado nada.
+                enviar_telegram(f"⚠️ SmallCap Hunter: la pasada se abortó en «{nombre}» (paso crítico). "
+                                f"Mira el log del orquestador.")
                 return
 
     resultado = fase_agentes(config)
@@ -644,7 +680,17 @@ def main():
         return
 
     while True:
-        una_pasada(args)
+        # Una excepción inesperada en una pasada no puede matar el servicio: se
+        # registra, se avisa y se espera a la siguiente. Ctrl+C sí lo para.
+        try:
+            una_pasada(args)
+        except KeyboardInterrupt:
+            log.info("Parado por el usuario")
+            return
+        except Exception as e:
+            log.exception("La pasada falló por una excepción inesperada")
+            enviar_telegram(f"⚠️ SmallCap Hunter: la pasada falló con una excepción ({type(e).__name__}). "
+                            f"El servicio sigue y lo reintentará en la próxima.")
 
         conn = conectar_db()
         try:

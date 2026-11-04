@@ -20,6 +20,7 @@ de cortesía no salió.
 """
 
 import os
+import html
 import logging
 
 import requests
@@ -73,7 +74,9 @@ def enviar_telegram(texto: str) -> bool:
             return False
         return True
     except Exception as e:
-        log.warning(f"No pude enviar el aviso de Telegram: {e}")
+        # El texto de una excepción de requests lleva la URL entera, y la URL lleva
+        # el token del bot: no puede acabar en el log (que se comparte al pedir ayuda).
+        log.warning(f"No pude enviar el aviso de Telegram: {str(e).replace(token, '***')}")
         return False
 
 
@@ -88,14 +91,21 @@ def notificar_analisis(agente: str, ticker: str, nombre: str, modelo: str,
     """
     emoji = EMOJI_VEREDICTO.get(veredicto, "❓")
 
+    # El mensaje va en modo HTML: todo lo que no sea mío hay que escaparlo. El
+    # nombre de la empresa y, sobre todo, el texto que escribió el modelo pueden
+    # llevar «<», «>» o «&»; sin escapar, Telegram rechaza el mensaje entero (400)
+    # y el aviso se pierde en silencio.
+    def esc(x):
+        return html.escape(str(x), quote=False)
+
     lineas = [
-        f"{emoji} <b>{ticker}</b> — {nombre or 'sin nombre'}",
-        f"Agente: {agente} ({modelo})",
-        f"Veredicto: <b>{veredicto}</b>",
+        f"{emoji} <b>{esc(ticker)}</b> — {esc(nombre or 'sin nombre')}",
+        f"Agente: {esc(agente)} ({esc(modelo)})",
+        f"Veredicto: <b>{esc(veredicto)}</b>",
     ]
     if citas_totales:
         lineas.append(f"Citas verificadas: {citas_verificadas}/{citas_totales}")
     if extra:
-        lineas.append(extra)
+        lineas.append(esc(extra))
 
     return enviar_telegram("\n".join(lineas))

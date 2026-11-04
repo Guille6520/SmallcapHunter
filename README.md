@@ -187,7 +187,15 @@ retira del resto de la pasada tras 3 fallos seguidos (cuota agotada o
 proveedor caído), no al primero. Después corre una segunda fase que
 reintenta las auditorías que se quedaron sin guardar (JSON cortado, 503,
 cuota), con un tope de 3 fallos por ticker en 7 días; los 429 de cuota no
-cuentan para ese tope.
+cuentan para ese tope. El mismo tope vale para el Detective (por modelo y
+ticker), para que un texto que siempre da JSON roto no gaste una llamada de
+pago en cada pasada.
+
+Para que un fallo no pase desapercibido: cada subproceso tiene tiempo máximo
+(uno colgado se mata y cuenta como fallo), un análisis sin veredicto válido se
+descarta en vez de rellenarse con uno inventado, un análisis que no llega a
+guardarse no cuenta como hecho, y si la pasada se aborta o el *daemon* se
+encuentra una excepción llega un aviso a Telegram.
 
 Si `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` están configurados, cada
 análisis del Detective o el Auditor manda un aviso a tu Telegram con el
@@ -421,6 +429,8 @@ smallcap_hunter/
 │   ├── test_seguimiento_senales.py   # cálculo de la vista personal de precios, con series inventadas
 │   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
 │   ├── test_contexto_sector.py       # mapa de sectores, movimiento del ETF, titulares y que los análisis no lo lean
+│   ├── test_robustez_agentes.py      # veredicto inválido, guardado que devuelve si guardó, auditoría que falla sola
+│   ├── test_robustez_orquestador.py  # tiempos máximos, daemon, escape de Telegram, token fuera del log, API
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
 │   └── test_api.py                   # endpoints de FastAPI
