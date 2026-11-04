@@ -4,7 +4,7 @@ detective.py — el primer agente de la Capa 3.
 Le doy al LLM el contexto numérico (los 4 scores de Capa 2), el resumen
 de las compras de insiders, y el texto real del MD&A — y le pido que
 construya una tesis de inversión: por qué esta empresa podría estar en
-fase pre-explosiva, qué catalizador no obvio ve, y qué riesgos identifica.
+una fase de inflexión, qué catalizador no obvio ve, y qué riesgos identifica.
 
 La pieza más importante de este archivo no es el LLM — es el
 verificador de citas. Un estudio reciente de 2026 encontró que varios

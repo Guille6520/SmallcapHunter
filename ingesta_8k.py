@@ -4,7 +4,7 @@ ingesta_8k.py — descargo y guardo los eventos materiales (8-K) de los
 
 El 10-Q me cuenta el trimestre; el 8-K me cuenta lo que pasa ENTRE
 trimestres: contratos importantes, cambios de directivos, ampliaciones
-de capital. Para una tesis de "fase pre-explosiva" eso es justo el tipo
+de capital. Para una tesis de "fase de inflexión" eso es justo el tipo
 de catalizador que el MD&A todavía no recoge.
 
 El problema de los 8-K es el ruido: una small cap presenta 20-40 al año

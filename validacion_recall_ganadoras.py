@@ -10,7 +10,7 @@ lo renombré para que pytest no lo confunda con la suite de tests/
 que esto es lo que corre en CI.
 
 Por qué existe: la pregunta "¿habría cazado a Tesla/Amazon/Netflix?" no
-tiene respuesta científica — su fase pre-explosiva es anterior al Form 4
+tiene respuesta científica — su fase de inflexión es anterior al Form 4
 electrónico (2003) y al XBRL fiable (2012), o nunca fueron small caps
 cotizadas (Spotify debutó valiendo 26.000M). La pregunta contestable es
 esta: entre las GANADORAS REALES de mi propia ventana de datos, ¿qué

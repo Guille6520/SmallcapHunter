@@ -9,9 +9,11 @@ Los guardo desagregados en la tabla auditorias para poder defender por qué
 el sistema puntuó cada empresa como lo hizo — no solo el número final.
 
   1. score_precio (0-10) — posición en el rango de 52 semanas.
-     Cuanto más cerca de mínimos, más alto el score. Es el predictor
-     más fuerte según la literatura: un insider comprando cuando la
-     acción está hundida tiene más convicción que uno comprando en máximos.
+     Cuanto más cerca de mínimos, más alto el score. Es la tesis original
+     del proyecto: un insider comprando cuando la acción está hundida
+     tiene más convicción que uno comprando en máximos. Es una hipótesis,
+     no un resultado demostrado; la contraria (premiar máximos) se prueba
+     en paralelo en la rama tesis-v2 (ver «Tesis en investigación» del README).
 
   2. score_conviccion (0-10) — cuántos insiders distintos compraron DENTRO
      DE LA VENTANA DEL CLUSTER y con qué intensidad. Más gente y más
@@ -23,7 +25,7 @@ el sistema puntuó cada empresa como lo hizo — no solo el número final.
 
   4. score_catalizador (0-10) — mejora de márgenes y viraje de caja.
      Una empresa que pierde dinero pero cuyo margen bruto mejora y cuya
-     caja operativa vira hacia positivo está en la fase pre-explosiva.
+     caja operativa vira hacia positivo está en una fase de inflexión.
 
 Cómo usarlo:
   python scorer_capa2.py

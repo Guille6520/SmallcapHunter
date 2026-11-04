@@ -4,8 +4,10 @@ mercado_yfinance.py — descargo datos de mercado para cada empresa
 La SEC no me da market cap, precio actual, ni rango de 52 semanas — eso
 solo lo tiene el mercado en tiempo real. Sin estos datos no puedo aplicar
 el filtro de tamaño de la Capa 1 ni calcular el score de posición en 52
-semanas de la Capa 2, que es el predictor más fuerte según la
-investigación académica que revisamos.
+semanas de la Capa 2. Esa posición es una hipótesis del proyecto, no un
+resultado demostrado: la literatura sobre el máximo de 52 semanas apunta en
+direcciones distintas según el mercado y el periodo (ver «Tesis en
+investigación» en el README).
 
 yfinance no es la API oficial de Yahoo Finance — es una librería que lee
 endpoints no documentados. Puede fallar o devolver datos vacíos sin previo

@@ -287,7 +287,7 @@ No hables de resultados financieros ni de si es buena inversión, solo de qué h
 def cabecera():
     st.markdown(
         '<div class="cabecera"><h1>🦄 SmallCap Hunter</h1>'
-        '<p>Detección de small caps en fase pre-explosiva — '
+        '<p>Small caps con señales tempranas de mejora — '
         'insiders + aceleración + agentes LLM con citas verificadas</p></div>',
         unsafe_allow_html=True,
     )

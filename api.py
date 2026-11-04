@@ -61,7 +61,7 @@ DB_CONFIG = {
 
 app = FastAPI(
     title="SmallCap Hunter API",
-    description="Detección de small caps pre-explosivas sobre datos públicos de la SEC.",
+    description="Criba de small caps con señales tempranas de mejora, sobre datos públicos de la SEC.",
     version="1.0.0",
 )
 

@@ -6,13 +6,16 @@
 
 ![Demostración del dashboard: panorama, ficha con citas en inglés y su traducción, chat y calidad por modelo](docs/demo.gif)
 
-Sistema autónomo de detección de small caps americanas en fase pre-explosiva.
-Busca empresas que muestran el patrón que tuvieron Amazon, Netflix o Tesla
-6-12 trimestres antes de despegar: aceleración del crecimiento, mejora de
-márgenes e insiders comprando en cluster — usando datos públicos de la SEC.
+Herramienta de investigación para un inversor: criba small caps americanas con
+datos públicos de la SEC y prepara, para las que pasan, un análisis con citas
+verificables que sirva de punto de partida. Busca señales tempranas —
+insiders comprando en cluster, crecimiento que se acelera, márgenes que
+mejoran — en empresas pequeñas, para investigarlas después por cuenta propia.
+No predice qué empresa subirá ni da recomendaciones: la decisión, y el resto
+de la investigación (noticias, eventos, el sector), son de quien la usa.
 
 Filosofía del sistema: precisión sobre recall. El objetivo no es puntuar
-miles de empresas, es producir 3-8 alertas reales al año. Los números
+miles de empresas, es dejar unas pocas con evidencia a la vista. Los números
 filtran primero (barato); los LLMs solo analizan a las supervivientes.
 
 Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
@@ -197,10 +200,19 @@ funciona igual — el aviso es cortesía, no dependencia.
 streamlit run dashboard.py
 ```
 
-Cinco vistas:
+Seis vistas:
 
 - **Panorama:** el embudo completo y los últimos veredictos de los agentes.
 - **Candidatas:** ranking por score de Capa 2 y por veredicto.
+- **Sectores:** contexto para orientarse, aparte del análisis. Por cada sector
+  con candidatas, cómo se mueve su ETF de referencia frente al Russell 2000
+  (1, 3 y 12 meses) y titulares recientes del tema con enlace. Las small caps
+  casi no tienen prensa, pero su sector sí. Los agentes **no** ven nada de
+  esto, no entra en el score y no es una recomendación; un test lo vigila
+  (`tests/test_contexto_sector.py`). Los titulares salen de Google News (RSS) y,
+  cuando responde, de las noticias de Yahoo del ETF: son generales del tema y
+  pueden traer ruido. Se actualiza en cada pasada del orquestador, o a mano
+  con `python contexto_sector.py`.
 - **Empresa:** la ficha con scores, insiders, revenue, MD&A y el historial
   de análisis del Detective y el Auditor. Cada análisis trae un
   desplegable de citas: la cita original en inglés, su traducción (escrita
@@ -231,8 +243,8 @@ hubo. De ahí sale la pestaña Observabilidad del dashboard:
   extra a ningún LLM.
 
 - **Coste por empresa:** lo que cuesta analizar cada ticker (Detective y
-  Auditor, con reintentos y fallos incluidos). Hoy son unos 0,06 $ de media
-  por empresa, 0,115 $ la más cara.
+  Auditor, con reintentos y fallos incluidos). Hoy son unos 4 céntimos de
+  media por empresa (sin contar experimentos puntuales como el del Auditor).
 - **Cuota de Gemini:** cuántas de las 20 peticiones gratuitas de hoy van
   gastadas y cuándo se renuevan (medianoche del Pacífico, en hora de
   Madrid). Sale de `llm_calls`, así que solo cuenta lo que hizo este
@@ -317,6 +329,43 @@ python backtest_rendimiento.py
 python validacion_recall_ganadoras.py --limite 50
 ```
 
+Estos contrastes tienen límites que conviene tener presentes: muestra pequeña,
+sesgo de supervivencia (las empresas que dejan de cotizar desaparecen de los
+datos de precio) y un mercado que es el mismo para todas las empresas de la
+muestra. Por eso no se presentan como prueba de nada.
+
+### Tesis en investigación
+
+El proyecto no da la selección por buena: la trata como una pregunta abierta. Hoy
+se prueban dos hipótesis opuestas sobre la misma variable, **dónde está el precio
+dentro de su rango de 52 semanas** cuando los insiders compran. No hay una
+versión mejor que la otra; son dos preguntas distintas.
+
+| | Qué premia | Estado |
+|---|---|---|
+| **Tesis original** (esta rama, `main`) | Precio cerca de **mínimos** de 52 semanas: un insider que compra con la acción hundida muestra más convicción | En uso. No demostrada |
+| **Tesis alternativa** (rama [`tesis-v2`](https://github.com/Guille6520/SmallcapHunter/tree/tesis-v2)) | Precio cerca de **máximos**, apoyada en la literatura sobre el máximo de 52 semanas (George y Hwang, 2004) | En seguimiento. Registrada de antemano |
+| **Control** | Ignora la posición | Referencia para las dos |
+
+Las tres comparten todo lo demás: filtros, resto de puntuaciones, corte y análisis
+con modelos. Solo cambia el sub-score de precio, así que la comparación es limpia.
+
+**Cómo se hace sin engañarse**
+
+- La hipótesis, los criterios y los límites están escritos en
+  [`docs/tesis-v2.md`](https://github.com/Guille6520/SmallcapHunter/blob/tesis-v2/docs/tesis-v2.md)
+  **antes** de ver ningún resultado. El hash del commit es su sello de fecha, y no
+  se edita: cualquier cambio sería otra versión.
+- Cada pasada del sistema guarda qué empresas marca cada tesis ese día, sin tocar
+  los análisis.
+- La evaluación se hace a 12 y 24 meses frente al mercado de small caps (IWM).
+
+**Qué no se espera de esto.** Con unas decenas de empresas por tesis y un mercado
+que es el mismo para todas, solo se verían diferencias enormes. Lo más probable es
+que el resultado sea «no concluyente». El valor está en el registro honesto y en
+acumular tiempo, no en demostrar nada pronto. Los resultados por empresa no se
+publican: el proyecto es informativo y no es consejo de inversión.
+
 ---
 
 ## Estructura del proyecto
@@ -355,7 +404,9 @@ smallcap_hunter/
 ├── generar_embeddings_rag.py         # backfill de metricas_trimestrales/eventos_8k.embedding
 │
 │   # Interfaz y alertas
-├── dashboard.py                      # Streamlit: embudo, fichas y chat LLM
+├── dashboard.py                      # Streamlit: embudo, fichas, sectores y chat LLM
+├── sectores.py                       # mapa SIC -> sector -> ETF de referencia (contexto, no análisis)
+├── contexto_sector.py                # precios de ETFs de sector y titulares para la vista Sectores
 ├── api.py                            # FastAPI: candidatas, ficha, RAG, disparar análisis
 ├── notificador_telegram.py           # aviso por Telegram tras cada análisis
 │
@@ -369,6 +420,7 @@ smallcap_hunter/
 │   ├── test_alertas.py               # reglas de alerta y envío por Telegram
 │   ├── test_seguimiento_senales.py   # cálculo de la vista personal de precios, con series inventadas
 │   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
+│   ├── test_contexto_sector.py       # mapa de sectores, movimiento del ETF, titulares y que los análisis no lo lean
 │   ├── test_rag_retrieval.py         # RAG y su degradación elegante
 │   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
 │   └── test_api.py                   # endpoints de FastAPI
@@ -379,6 +431,7 @@ smallcap_hunter/
 ├── ingesta_10q_historico.py
 ├── backtest_rendimiento.py
 ├── validacion_recall_ganadoras.py
+├── experimento_auditor.py            # separa el sesgo del Auditor de Claude del rigor (ver Resultados)
 └── validadas_historicas.csv          # generado por validacion_historica.py
 ```
 
@@ -388,11 +441,11 @@ smallcap_hunter/
 
 ```
 Form 4 + XBRL (SEC) + yfinance
-      ↓   ~10.000 empresas descubiertas
+      ↓   más de 11.000 empresas descubiertas
 Capa 1: filtros binarios (market cap 50M-2B, bolsa, cluster 3+ insiders/60d, C-suite)
-      ↓   ~650 candidatas
+      ↓   ~100 empresas pasan (cifras de nov-2026; cambian cada pasada)
 Capa 2: scoring numérico (precio 52W + convicción + aceleración + catalizador)
-      ↓   ~112 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
+      ↓   ~25 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
           corte deliberadamente ancho: el embudo fino lo hacen los agentes)
 Capa 3: Detective → Auditor cruzado (Claude Haiku 4.5 y Gemini Flash, votos ciegos),
         orquestados como un grafo de LangGraph (grafo_capa3.py: fan-out a
@@ -408,6 +461,10 @@ Veredicto de interés (no es consejo de inversión):
 
 Dos interfaces sobre el mismo dato: `dashboard.py` (Streamlit, para un
 humano) y `api.py` (FastAPI, para consumo por programa).
+
+Aparte del pipeline, y sin entrar en él, el dashboard enseña un **contexto de
+sector** (ETF de referencia y titulares, ver «Sectores» arriba) para quien
+investiga a mano. Es información: ni los agentes ni el score lo leen.
 
 ### Verificación de citas (protocolo 2)
 
@@ -470,8 +527,10 @@ De las 456 citas del protocolo 2, solo 21 (el 5 %) no tienen soporte: 7 de
 - **Las muestras son pequeñas y no están emparejadas.** El protocolo 1 son
   los análisis históricos (otras empresas y otras fechas); el protocolo 2,
   las 25 de hoy.
-- **Todavía no se ha contrastado con el precio de las acciones**, que es la
-  pregunta de fondo del proyecto.
+- **Nada de esto demuestra que la selección acierte.** Mide la calidad del
+  análisis (citas, coste, fiabilidad), no si las empresas elegidas rinden más
+  que el mercado. Esa hipótesis de fondo está sin demostrar y se trata como una
+  pregunta abierta (ver «Tesis en investigación»).
 
 **Otros datos que salieron del análisis**
 
@@ -519,6 +578,13 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
   /candidatas/{ticker}/analizar` bloquea 10-30s (dos LLMs + verificador
   de citas). Correcto para el volumen real del proyecto, no para un
   servicio con muchos usuarios concurrentes.
+- **La API no tiene autenticación ni límite de uso** — está pensada para
+  correr en local. Quien la exponga a una red debe ponerle antes una capa de
+  acceso, porque `POST .../analizar` gasta las claves de los modelos.
+- **No hay copia de seguridad automática de la base de datos** — Postgres corre
+  en un contenedor sin volcados programados.
+- **La hipótesis de fondo no está demostrada** — ni la selección por mínimos de
+  52 semanas ni la alternativa. Ver «Tesis en investigación».
 
 ## Roadmap (pendiente, en orden de prioridad)
 
@@ -532,9 +598,11 @@ Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
 - **Agente de monitoring (V2)** — guardián de noticias sobre las
   MUY_INTERESANTE: clasifica cada noticia como catalizador / ruido /
   tesis rota comparándola contra la tesis original del Detective
-- **Módulo macro top-down (V2)** — perspectiva sectorial pre-digerida
-  (tipos, materias primas, regulación) inyectada como una frase de
-  contexto, en módulo aparte para no contaminar el prompt micro
+- **Módulo macro top-down** — el contexto de sector (ETF y titulares) ya
+  existe como panel informativo en el dashboard. Falta la parte macro
+  (tipos, materias primas, regulación) y, si se decide, un resumen del
+  tema hecho por un modelo, siempre aparte de los Detectives para no
+  contaminar su análisis ciego
 - **Track record del insider** — ponderar la convicción según el acierto
   histórico de ese directivo en sus compras anteriores
 - **Profundidad de balance** — vencimientos de deuda, concentración de
