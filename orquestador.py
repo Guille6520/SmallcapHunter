@@ -539,6 +539,29 @@ def fase_agentes(config: dict) -> dict:
     return resultado
 
 
+def fase_tesis_v2() -> int:
+    """Guardo la instantánea de la tesis V2 (ver docs/tesis-v2.md): con las
+    puntuaciones que acaba de dejar la Capa 2, apunto qué empresas marca cada brazo
+    (V1 mínimos, V2 máximos, V0 control) y la fecha de hoy. La llamo en cada pasada,
+    antes de los agentes, para que el registro no dependa de que yo me acuerde de
+    lanzar scorer_v2.py a mano. Si la pasada se repite el mismo día, la instantánea
+    se sobrescribe, no se duplica. No es crítica: si falla, lo dejo en el log y la
+    pasada sigue. Devuelvo cuántas empresas guardé."""
+    try:
+        from scorer_v2 import guardar_instantanea, leer_corte, leer_puntuadas
+        conn = conectar_db()
+        try:
+            filas = leer_puntuadas(conn)
+            guardadas = guardar_instantanea(conn, filas, leer_corte(conn))
+        finally:
+            conn.close()
+        log.info(f"Tesis V2: instantánea guardada ({guardadas} empresas)")
+        return guardadas
+    except Exception as e:
+        log.warning(f"Tesis V2: no pude guardar la instantánea ({e})")
+        return 0
+
+
 def fase_seguimiento() -> dict:
     """Baja los precios nuevos de las empresas con veredicto y del IWM, para el
     seguimiento de señales (seguimiento_senales.py). No es crítico: si Yahoo
@@ -598,6 +621,7 @@ def una_pasada(args) -> None:
             if not ejecutar_paso(nombre, argumentos, critico):
                 return
 
+    fase_tesis_v2()  # la instantánea va antes de los agentes: refleja el scoring de esta pasada
     resultado = fase_agentes(config)
     auditorias = fase_auditorias(config)
     fase_seguimiento()
