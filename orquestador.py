@@ -547,6 +547,15 @@ def fase_seguimiento() -> dict:
     return actualizar()
 
 
+def fase_contexto_sector() -> dict:
+    """Actualizo el contexto de sector que se enseña en el dashboard (precios de los
+    ETFs de sector y titulares del tema, ver contexto_sector.py). Es información para
+    quien mira, no entra en el score ni lo leen los agentes. No es crítica: si
+    Yahoo o GDELT fallan, queda en el log y la pasada sigue."""
+    from contexto_sector import fase_sectores
+    return fase_sectores()
+
+
 def fase_alertas() -> list:
     """Revisión final de la pasada: errores por modelo, cuota de Gemini, gasto
     y calidad de citas (ver alertas.py). Va al final, cuando ya hay datos de
@@ -601,6 +610,7 @@ def una_pasada(args) -> None:
     resultado = fase_agentes(config)
     auditorias = fase_auditorias(config)
     fase_seguimiento()
+    fase_contexto_sector()
     fase_alertas()
 
     minutos = (datetime.now() - inicio).total_seconds() / 60

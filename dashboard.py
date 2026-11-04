@@ -1276,6 +1276,74 @@ def bloque_calidad():
             )
 
 
+@st.cache_data(ttl=300)
+def _contexto_sector() -> list:
+    """El contexto de sector (ver contexto_sector.py), cacheado 5 min: solo cambia
+    cuando corre una pasada del orquestador."""
+    import contexto_sector
+    return contexto_sector.leer_panorama(conectar_db())
+
+
+def _pct_signo(x) -> str:
+    return "s/d" if x is None else f"{100 * x:+.1f}%"
+
+
+def vista_sectores():
+    """
+    Contexto de sector de las candidatas: cómo va el ETF de su sector frente al
+    Russell 2000 y qué titulares ha habido del tema. Es información para orientarse,
+    no un análisis: los agentes no la ven, no cuenta en el score y no es una
+    recomendación. Las small caps casi no tienen prensa, pero su sector sí.
+    """
+    st.subheader("🌐 Contexto de sector")
+    st.caption(
+        "Cómo se mueve el sector de cada candidata y qué se está diciendo del tema. Es solo "
+        "información para orientarte: los agentes no ven nada de esto, no cuenta en el score "
+        "y no es una recomendación."
+    )
+
+    try:
+        panorama = _contexto_sector()
+    except Exception as e:
+        st.error(f"No pude cargar el contexto de sector: {e}")
+        return
+
+    if not panorama:
+        st.info("Todavía no hay sectores con candidatas o aún no se ha corrido el contexto. "
+                "Se actualiza en cada pasada del orquestador, o a mano con `python contexto_sector.py`.")
+        return
+
+    for s in panorama:
+        with st.expander(f"{s['nombre']} · {len(s['candidatas'])} candidata(s)", expanded=len(s["candidatas"]) >= 3):
+            st.markdown("**Candidatas:** " + ", ".join(f"`{t}` ({sc}/40)" for t, sc in s["candidatas"]))
+
+            mov = s["movimiento"]
+            if mov is None:
+                st.caption("Este grupo no tiene un ETF de referencia propio.")
+            elif all(v["etf"] is None for v in mov.values()):
+                st.caption(f"Aún no hay precios guardados de {s['etf']}.")
+            else:
+                columnas = st.columns(len(mov))
+                for col, (horizonte, v) in zip(columnas, mov.items()):
+                    col.metric(
+                        f"{s['etf']} · {horizonte}", _pct_signo(v["etf"]),
+                        delta=None if v["dif"] is None else f"{100 * v['dif']:+.1f} pts vs IWM",
+                    )
+                st.caption(f"Movimiento del ETF {s['etf']} frente al Russell 2000 (IWM). "
+                           f"Precios hasta {s['precios_hasta']}.")
+
+            if not s["titulares"]:
+                st.caption("Sin titulares guardados todavía de este sector.")
+            else:
+                st.markdown("**Titulares recientes**")
+                for t in s["titulares"]:
+                    fecha = f"{t['fecha']:%d/%m}" if t["fecha"] else "s/f"
+                    origen = {"yahoo": "Yahoo (ETF del sector)", "google_news": "Google News (tema general)"}.get(t["origen"], t["origen"])
+                    st.markdown(f"- {fecha} · [{sin_latex(t['titular'])}]({t['enlace']}) — {t['fuente'] or 's/f'} · _{origen}_")
+                st.caption("Los de Google News son titulares generales del tema y pueden traer ruido. Pulsa el enlace "
+                           "para leerlos en su fuente: aquí solo guardo el titular.")
+
+
 def seguimiento_activado() -> bool:
     import seguimiento_senales
     return seguimiento_senales.activado()
@@ -1502,10 +1570,10 @@ def main():
 
     with st.sidebar:
         st.markdown("### Navegación")
-        vistas = ["📊 Panorama", "🏆 Candidatas", "🔎 Empresa", "💬 Chat", "📈 Observabilidad"]
+        vistas = ["📊 Panorama", "🏆 Candidatas", "🌐 Sectores", "🔎 Empresa", "💬 Chat", "📈 Observabilidad"]
         if seguimiento_activado():
             # Vista personal, apagada por defecto (ver seguimiento_senales.activado)
-            vistas.insert(3, "🎯 Seguimiento")
+            vistas.insert(4, "🎯 Seguimiento")
         vista = st.radio("Vista", vistas, label_visibility="collapsed")
 
         ticker = None
@@ -1548,6 +1616,8 @@ def main():
         vista_panorama()
     elif vista == "🏆 Candidatas":
         vista_candidatas()
+    elif vista == "🌐 Sectores":
+        vista_sectores()
     elif vista == "🔎 Empresa" and ticker:
         vista_empresa(ticker)
     elif vista == "🎯 Seguimiento" and seguimiento_activado():
