@@ -88,9 +88,14 @@ def _nodo_detective(modelo: str, campo_resultado: str, campo_fallo: str):
             if not resultado:
                 return {campo_fallo: True}
 
-            detective.guardar_resultado(
+            # Un análisis que no se guardó no cuenta como hecho: sin esto el
+            # orquestador lo daba por bueno y la llamada, ya pagada, se perdía
+            # sin que nada lo dijera.
+            if not detective.guardar_resultado(
                 conn, resultado["contexto"]["empresa_id"], modelo, resultado
-            )
+            ):
+                log.error(f"Detective ({modelo}) sobre {state['ticker']}: el análisis no se pudo guardar")
+                return {campo_fallo: True}
             return {campo_resultado: resultado}
         finally:
             conn.close()
@@ -118,10 +123,12 @@ def nodo_auditor(state: EstadoCapa3) -> dict:
         log.error(f"Auditor sobre {state['ticker']}: excepción — {e}")
         return {"auditorias_guardadas": []}
 
-    for r in resultados:
-        auditor.guardar_resultado_auditor(state["conn"], r)
+    # Solo cuento como guardadas las que de verdad se guardaron.
+    guardadas = [r for r in resultados if auditor.guardar_resultado_auditor(state["conn"], r)]
+    if len(guardadas) < len(resultados):
+        log.error(f"{state['ticker']}: {len(resultados) - len(guardadas)} auditoría(s) obtenidas no se pudieron guardar")
 
-    return {"auditorias_guardadas": resultados}
+    return {"auditorias_guardadas": guardadas}
 
 
 def construir_grafo():

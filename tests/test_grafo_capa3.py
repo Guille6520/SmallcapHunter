@@ -46,6 +46,7 @@ def test_los_dos_detectives_corren_y_el_auditor_los_espera(monkeypatch):
 
     def fake_guardar_resultado(conn, empresa_id, modelo, resultado):
         llamadas["guardar_detective"].append(modelo)
+        return True
 
     def fake_ejecutar_auditor(conn, ticker, modelo_detective=None):
         llamadas["auditor"] += 1
@@ -53,6 +54,7 @@ def test_los_dos_detectives_corren_y_el_auditor_los_espera(monkeypatch):
 
     def fake_guardar_resultado_auditor(conn, resultado):
         llamadas["guardar_auditor"] += 1
+        return True
 
     monkeypatch.setattr(detective, "ejecutar_detective", fake_ejecutar_detective)
     monkeypatch.setattr(detective, "guardar_resultado", fake_guardar_resultado)
@@ -84,9 +86,9 @@ def test_un_detective_falla_pero_el_auditor_sigue_corriendo(monkeypatch):
         return []
 
     monkeypatch.setattr(detective, "ejecutar_detective", fake_ejecutar_detective)
-    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: None)
+    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: True)
     monkeypatch.setattr(auditor, "ejecutar_auditor", fake_ejecutar_auditor)
-    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: None)
+    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: True)
 
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")
 
@@ -97,7 +99,7 @@ def test_un_detective_falla_pero_el_auditor_sigue_corriendo(monkeypatch):
 
 def test_los_dos_detectives_fallan_el_auditor_no_corre(monkeypatch):
     monkeypatch.setattr(detective, "ejecutar_detective", lambda conn, ticker, modelo: None)
-    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: None)
+    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: True)
 
     auditor_llamado = {"veces": 0}
     monkeypatch.setattr(
@@ -119,9 +121,9 @@ def test_modelos_a_ejecutar_restringe_que_detective_corre(monkeypatch):
         detective, "ejecutar_detective",
         lambda conn, ticker, modelo: (llamadas.append(modelo), _resultado_detective_falso())[1],
     )
-    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: None)
+    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: True)
     monkeypatch.setattr(auditor, "ejecutar_auditor", lambda *a, **k: [])
-    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: None)
+    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: True)
 
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE", modelos_a_ejecutar=["claude"])
 
@@ -137,9 +139,9 @@ def test_excepcion_en_detective_se_convierte_en_fallo_no_en_crash(monkeypatch):
         raise RuntimeError("Claude devolvió 429")
 
     monkeypatch.setattr(detective, "ejecutar_detective", _explota)
-    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: None)
+    monkeypatch.setattr(detective, "guardar_resultado", lambda *a, **k: True)
     monkeypatch.setattr(auditor, "ejecutar_auditor", lambda *a, **k: [])
-    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: None)
+    monkeypatch.setattr(auditor, "guardar_resultado_auditor", lambda *a, **k: True)
 
     # No debe propagar la excepción -- el grafo la convierte en fallo_*
     estado_final = grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE")

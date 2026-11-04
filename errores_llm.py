@@ -16,7 +16,8 @@ import re
 CATEGORIAS_ERROR = (
     "truncado",           # el modelo paró por max_tokens: JSON cortado
     "json_invalido",      # JSON roto sin que haya sido el tope de tokens
-    "cuota_429",          # límite de peticiones o cuota diaria agotada
+    "veredicto_invalido", # JSON correcto, pero sin un veredicto de los tres permitidos
+    "cuota_429",         # límite de peticiones o cuota diaria agotada
     "sobrecarga_503",     # proveedor saturado o caído (503, 504, 529 overloaded)
     "timeout",
     "autenticacion",      # clave inválida o sin permisos (401/403)
@@ -50,6 +51,28 @@ def describir_error(e: Exception) -> str:
     """Lo que se guarda en llm_calls.tipo_error para una excepción de la API."""
     texto = str(e)
     return f"{clasificar_error(texto)}: {texto}"[:200]
+
+
+VEREDICTOS_VALIDOS = ("MUY_INTERESANTE", "INTERESANTE", "NADA_INTERESANTE")
+
+
+def normalizar_veredicto(valor):
+    """El veredicto en su forma canónica, o None si el modelo no dio uno de los
+    tres permitidos (falta, vacío, otro texto, otro tipo). Tolero mayúsculas,
+    espacios y guiones en vez de guiones bajos, que es lo que hace un modelo
+    despistado; no adivino nada más. Importa porque antes un veredicto ausente se
+    sustituía en silencio por INTERESANTE y se guardaba como si lo hubiera dicho
+    el modelo."""
+    if not isinstance(valor, str):
+        return None
+    limpio = valor.strip().upper().replace(" ", "_").replace("-", "_")
+    return limpio if limpio in VEREDICTOS_VALIDOS else None
+
+
+def describir_veredicto_invalido(valor) -> str:
+    """Lo que se guarda en llm_calls.tipo_error cuando el JSON no trae un veredicto
+    válido."""
+    return f"veredicto_invalido: {valor!r}"[:200]
 
 
 def describir_error_json(respuesta, e: Exception) -> str:

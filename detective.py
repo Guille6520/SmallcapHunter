@@ -48,6 +48,7 @@ from embeddings import generar_embedding_consulta, vector_a_literal_pgvector
 # detective.
 from errores_llm import (  # noqa: F401
     CATEGORIAS_ERROR, clasificar_error, describir_error, describir_error_json,
+    describir_veredicto_invalido, normalizar_veredicto,
 )
 from verificador_citas import (  # noqa: F401
     verificar_citas, _normalizar_para_comparar, VERSION_PROTOCOLO,
@@ -718,6 +719,26 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
         )
         return None
 
+    # El JSON puede estar bien formado y aun así no traer un veredicto de los
+    # tres permitidos. Antes un veredicto ausente se sustituía en silencio por
+    # INTERESANTE y se guardaba como si lo hubiera dicho el modelo: un análisis
+    # sin veredicto no vale, se cuenta como fallo (y gasta del tope de reintentos).
+    veredicto = normalizar_veredicto(respuesta_json.get("veredicto_preliminar"))
+    if veredicto is None:
+        registrar_llamada_llm(
+            origen="detective", modelo=modelo, ticker=ticker,
+            tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
+            tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
+            segundos=time.time() - t0, exito=False,
+            tipo_error=describir_veredicto_invalido(respuesta_json.get("veredicto_preliminar")),
+        )
+        log.error(
+            f"{ticker} ({modelo}): el modelo no dio un veredicto válido "
+            f"({respuesta_json.get('veredicto_preliminar')!r}) — descarto el análisis"
+        )
+        return None
+    respuesta_json["veredicto_preliminar"] = veredicto
+
     registrar_llamada_llm(
         origen="detective", modelo=modelo, ticker=ticker,
         tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
@@ -756,8 +777,15 @@ def ejecutar_detective(conn, ticker: str, modelo: str) -> dict: #Función princi
     }
 
 
-def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict): #Funcion que guarda el resultado del análisis en la base de datos y notifica por Telegram.
-    veredicto = resultado["respuesta_llm"].get("veredicto_preliminar", "INTERESANTE")
+def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict) -> bool:
+    """Guardo el análisis en la base de datos y aviso por Telegram. Devuelvo True si
+    quedó guardado y False si no: quien me llama tiene que saberlo, porque un
+    análisis que se pagó y no se guardó no puede contarse como hecho. El aviso de
+    Telegram va aparte y su fallo no afecta a eso: el análisis ya está guardado."""
+    veredicto = normalizar_veredicto(resultado["respuesta_llm"].get("veredicto_preliminar"))
+    if veredicto is None:
+        log.error("No guardo el resultado del Detective: no trae un veredicto válido")
+        return False
     if resultado["verificacion_citas"]["alucinacion_detectada"]:
         veredicto = "ALUCINACION"
 
@@ -777,10 +805,17 @@ def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict): #Fun
             )
         )
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log.error(f"No pude guardar resultado del Detective: {e}")
+        return False
+    finally:
+        cur.close()
 
-        # Aviso por Telegram DESPUÉS del commit — no quiero avisar de un
-        # análisis que luego falló al guardarse. Si Telegram no está
-        # configurado, notificar_analisis lo dice en el log y sigue.
+    # Aviso por Telegram DESPUÉS del commit — no quiero avisar de un análisis
+    # que luego falló al guardarse. Va fuera del try de arriba: si Telegram
+    # falla, el análisis sigue guardado y no debo devolver False ni deshacerlo.
+    try:
         contexto = resultado["contexto"]
         verificacion = resultado["verificacion_citas"]
         notificar_analisis(
@@ -794,10 +829,8 @@ def guardar_resultado(conn, empresa_id: int, modelo: str, resultado: dict): #Fun
             extra=resultado["respuesta_llm"].get("catalizador_no_obvio"),
         )
     except Exception as e:
-        conn.rollback()
-        log.error(f"No pude guardar resultado del Detective: {e}")
-    finally:
-        cur.close()
+        log.warning(f"Detective guardado, pero el aviso por Telegram falló: {e}")
+    return True
 
 
 def main(): #Función principal que se ejecuta al correr el script desde la línea de comandos.
@@ -810,7 +843,8 @@ def main(): #Función principal que se ejecuta al correr el script desde la lín
     try:
         resultado = ejecutar_detective(conn, args.ticker, args.modelo)
         if resultado:
-            guardar_resultado(conn, resultado["contexto"]["empresa_id"], args.modelo, resultado)
+            if not guardar_resultado(conn, resultado["contexto"]["empresa_id"], args.modelo, resultado):
+                raise SystemExit(1)   # el análisis se pagó y no se guardó: que se note
             print(json.dumps(resultado["respuesta_llm"], indent=2, ensure_ascii=False))
     finally:
         conn.close() #Garantizo que la conexión se cierra aunque haya errores.

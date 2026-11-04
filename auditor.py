@@ -39,6 +39,7 @@ from detective import (
     parsear_json_llm, verificar_citas, formatear_eventos_8k,
     formatear_senales_mercado, texto_fuente_citas, MAX_CARACTERES_MDA,
     registrar_llamada_llm, VERSION_PROTOCOLO, describir_error, describir_error_json,
+    describir_veredicto_invalido, normalizar_veredicto,
 )
 from notificador_telegram import notificar_analisis
 
@@ -216,7 +217,13 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
                 origen="auditor", modelo=modelo_auditor, ticker=ticker,
                 segundos=time.time() - t0, exito=False, tipo_error=describir_error(e),
             )
-            raise
+            # Antes aquí hacía `raise`: si la segunda auditoría fallaba (cuota,
+            # 503), se perdía la primera, ya pagada y sin guardar. Ahora esta
+            # auditoría se da por fallida y sigo con la siguiente: cada análisis
+            # lo audita un modelo distinto, así que el fallo de uno no tiene por
+            # qué ser el del otro.
+            log.error(f"{ticker}: la auditoría de {modelo_original} (id {detective_id}) falló — {describir_error(e)}")
+            continue
 
         try:
             respuesta_json = parsear_json_llm(texto_respuesta)
@@ -233,6 +240,25 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
             )
             continue
 
+        # Un JSON bien formado sin un veredicto de los tres permitidos no vale:
+        # antes se sustituía en silencio por INTERESANTE y se guardaba como si lo
+        # hubiera dicho el modelo.
+        veredicto_modelo = normalizar_veredicto(respuesta_json.get("veredicto_auditor"))
+        if veredicto_modelo is None:
+            registrar_llamada_llm(
+                origen="auditor", modelo=modelo_auditor, ticker=ticker,
+                tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
+                tokens_salida=getattr(texto_respuesta, "tokens_salida", None),
+                segundos=time.time() - t0, exito=False,
+                tipo_error=describir_veredicto_invalido(respuesta_json.get("veredicto_auditor")),
+            )
+            log.error(
+                f"{ticker}: el auditor ({modelo_auditor}) no dio un veredicto válido "
+                f"({respuesta_json.get('veredicto_auditor')!r}) — descarto la auditoría"
+            )
+            continue
+        respuesta_json["veredicto_auditor"] = veredicto_modelo
+
         registrar_llamada_llm(
             origen="auditor", modelo=modelo_auditor, ticker=ticker,
             tokens_entrada=getattr(texto_respuesta, "tokens_entrada", None),
@@ -248,7 +274,7 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
             transacciones=contexto["transacciones"],
         )
 
-        veredicto_final = respuesta_json.get("veredicto_auditor", "INTERESANTE")
+        veredicto_final = veredicto_modelo
         if verificacion["alucinacion_detectada"]:
             veredicto_final = "ALUCINACION"
 
@@ -275,7 +301,10 @@ def ejecutar_auditor(conn, ticker: str, modelo_detective: str = None):
     return resultados
 
 
-def guardar_resultado_auditor(conn, resultado: dict):
+def guardar_resultado_auditor(conn, resultado: dict) -> bool:
+    """Guardo la auditoría. Devuelvo True si quedó guardada y False si no, para que
+    quien me llama no cuente como hecha una auditoría que se pagó y se perdió. El
+    aviso de Telegram va aparte: si falla, la auditoría sigue guardada."""
     cur = conn.cursor()
     try:
         cur.execute(
@@ -292,8 +321,15 @@ def guardar_resultado_auditor(conn, resultado: dict):
             )
         )
         conn.commit()
+    except Exception as e:
+        conn.rollback()
+        log.error(f"No pude guardar resultado del Auditor: {e}")
+        return False
+    finally:
+        cur.close()
 
-        # Aviso por Telegram tras el commit, igual que en detective.py.
+    # Aviso por Telegram tras el commit, igual que en detective.py.
+    try:
         verificacion = resultado["verificacion_citas"]
         relacion = resultado["respuesta_llm"].get("relacion_con_veredicto_detective")
         notificar_analisis(
@@ -307,10 +343,8 @@ def guardar_resultado_auditor(conn, resultado: dict):
             extra=f"{relacion} el veredicto del Detective" if relacion else None,
         )
     except Exception as e:
-        conn.rollback()
-        log.error(f"No pude guardar resultado del Auditor: {e}")
-    finally:
-        cur.close()
+        log.warning(f"Auditoría guardada, pero el aviso por Telegram falló: {e}")
+    return True
 
 
 def main():
@@ -324,7 +358,8 @@ def main():
     try:
         resultados = ejecutar_auditor(conn, args.ticker, args.detective_modelo)
         for resultado in resultados:
-            guardar_resultado_auditor(conn, resultado)
+            if not guardar_resultado_auditor(conn, resultado):
+                raise SystemExit(1)   # la auditoría se pagó y no se guardó: que se note
             print(json.dumps(resultado["respuesta_llm"], indent=2, ensure_ascii=False))
     finally:
         conn.close()

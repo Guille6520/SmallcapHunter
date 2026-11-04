@@ -71,8 +71,20 @@ def test_los_detectives_de_protocolo_antiguo_cuentan_como_pendientes():
     orquestador.empresas_que_necesitan_analisis(conn, corte=25, limite=10)
 
     sql, params = conn.cur.ejecutadas[0]
-    assert params == (25, VERSION_PROTOCOLO)
+    assert params == (25, VERSION_PROTOCOLO, orquestador.MAX_FALLOS_DETECTIVE_7D)
     assert "version_protocolo" in sql and "d.version <" in sql
+
+
+def test_el_detective_tiene_tope_de_reintentos_por_modelo_y_ticker():
+    conn = _Conn()
+
+    orquestador.empresas_que_necesitan_analisis(conn, corte=25, limite=10)
+
+    sql, params = conn.cur.ejecutadas[0]
+    assert params[-1] == orquestador.MAX_FALLOS_DETECTIVE_7D == 3
+    assert "origen = 'detective'" in sql and "not l.exito" in sql
+    assert "l.modelo = m.modelo" in sql, "el fallo de un modelo no debe frenar al otro"
+    assert "cuota_429" in sql and "sobrecarga_503" in sql,         "un 429 de cuota o un 503 del proveedor no deben agotar el tope de reintentos del ticker"
 
 
 # ---------- la fase de auditorías ----------
