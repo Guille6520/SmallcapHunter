@@ -269,6 +269,15 @@ hubo. De ahí sale la pestaña Observabilidad del dashboard:
   baja o análisis marcados ALUCINACION. Las mismas reglas salen como banner
   en la pestaña, y están probadas sin base de datos
   (`tests/test_alertas.py`).
+- **Ingesta parada:** los scripts de ingesta se tragan los errores por
+  empresa y terminan con código 0 aunque no traigan nada, así que no me
+  fío de lo que digan: la revisión mide la edad del dato más nuevo de cada
+  fuente (Form 4, mercado, 8-K, 13D/G, 10-Q) y avisa si pasa de un umbral
+  que sale de cómo publica esa fuente (los Form 4 llegan por trimestres,
+  por eso el suyo es de 130 días y el de mercado de 7). También avisa si
+  un paso de la pasada falla o se pasa del tiempo máximo, y si
+  `SEC_CONTACT_EMAIL` no está configurado (la SEC devuelve 403 sin
+  contacto real). Probado en `tests/test_alertas_ingesta.py`.
 
 Nació de una necesidad real: para decidir en sep-2026 si cambiar el
 modelo gratuito que fallaba, hubo que comprobar a mano el panel de cada
@@ -426,6 +435,7 @@ smallcap_hunter/
 │   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
 │   ├── test_errores_llm.py           # clasificación de errores, JSON truncado
 │   ├── test_alertas.py               # reglas de alerta y envío por Telegram
+│   ├── test_alertas_ingesta.py       # ingesta parada: umbrales por fuente, pasos fallidos, contacto SEC
 │   ├── test_seguimiento_senales.py   # cálculo de la vista personal de precios, con series inventadas
 │   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
 │   ├── test_contexto_sector.py       # mapa de sectores, movimiento del ETF, titulares y que los análisis no lo lean

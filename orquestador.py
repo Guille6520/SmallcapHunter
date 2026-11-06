@@ -112,6 +112,11 @@ MAX_FALLOS_DETECTIVE_7D = 3
 TIMEOUT_PASO_SEGUNDOS = 4 * 3600
 TIMEOUT_GRAFO_SEGUNDOS = 20 * 60    # un ticker: dos Detectives y las auditorías
 
+# Pasos no críticos que fallaron en la pasada en curso. Un paso no crítico que falla
+# no para nada, y por eso mismo nadie se entera: aquí se anotan para que la revisión
+# de alertas del final los cuente en su único mensaje.
+PASOS_FALLIDOS = []
+
 
 def conectar_db():
     conn = psycopg2.connect(**DB_CONFIG)
@@ -163,6 +168,7 @@ def ejecutar_paso(nombre: str, argumentos: list, critico: bool) -> bool:
             log.error(f">>> {nombre} FALLÓ (código {codigo}) — aborto la pasada")
             return False
         log.warning(f">>> {nombre} falló (código {codigo}) — sigo, no es crítico")
+        PASOS_FALLIDOS.append(nombre)
         return True
 
     log.info(f">>> {nombre} terminado en {minutos:.1f} min")
@@ -588,7 +594,7 @@ def fase_contexto_sector() -> dict:
     return fase_sectores()
 
 
-def fase_alertas() -> list:
+def fase_alertas(pasos_fallidos: list = None) -> list:
     """Revisión final de la pasada: errores por modelo, cuota de Gemini, gasto
     y calidad de citas (ver alertas.py). Va al final, cuando ya hay datos de
     esta pasada, y nunca la rompe: si falla, se queda en el log."""
@@ -596,7 +602,7 @@ def fase_alertas() -> list:
         from alertas import revisar_y_avisar
         conn = conectar_db()
         try:
-            return revisar_y_avisar(conn)
+            return revisar_y_avisar(conn, pasos_fallidos=pasos_fallidos)
         finally:
             conn.close()
     except Exception as e:
@@ -607,6 +613,7 @@ def fase_alertas() -> list:
 def una_pasada(args) -> None:
     inicio = datetime.now()
     anio = inicio.year
+    PASOS_FALLIDOS.clear()
 
     conn = conectar_db()
     try:
@@ -647,7 +654,7 @@ def una_pasada(args) -> None:
     auditorias = fase_auditorias(config)
     fase_seguimiento()
     fase_contexto_sector()
-    fase_alertas()
+    fase_alertas(list(PASOS_FALLIDOS))
 
     minutos = (datetime.now() - inicio).total_seconds() / 60
     resumen = (

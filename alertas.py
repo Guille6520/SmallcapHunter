@@ -22,6 +22,9 @@ Reglas (los umbrales están como constantes aquí abajo):
   - cuota gratuita de Gemini casi agotada o agotada hoy
   - gasto del día por encima de un tope
   - calidad de citas baja o análisis marcados ALUCINACION en la última semana
+  - ingesta parada: una fuente (Form 4, mercado, 8-K, 13D/G, 10-Q) que lleva
+    demasiado sin traer datos nuevos, un paso de la pasada que falló o
+    SEC_CONTACT_EMAIL sin configurar (la SEC bloquea sin un contacto real)
 
 Cómo usarlo:
   python alertas.py            # evalúa y escribe las alertas, no envía nada
@@ -29,6 +32,7 @@ Cómo usarlo:
 El orquestador lo llama solo al final de cada pasada.
 """
 
+import os
 import html
 import logging
 import argparse
@@ -59,6 +63,25 @@ UMBRAL_COSTE_DIARIO_USD = 1.00
 VENTANA_CALIDAD_DIAS = 7
 MIN_ANALISIS_PARA_CALIDAD = 3
 
+# Ingesta: días sin datos nuevos a partir de los cuales aviso. Cada umbral sale de
+# cómo publica la fuente, no de un número redondo:
+#  - Form 4: la SEC lo publica en lotes trimestrales, el último llega semanas
+#    después de cerrar el trimestre. Se mide por la fecha de la transacción (no
+#    por la de carga: el upsert no la toca al recargar) y 130 días es un trimestre
+#    más el retraso normal; pasarse significa que se saltó uno entero.
+#  - Mercado: cada pasada actualiza un lote, y el servicio pasa cada 48 h.
+#  - 8-K y 13D/G: llegan cada semana para las ~460 empresas que sigo; 13D/G es
+#    más raro, de ahí el margen mayor.
+#  - 10-Q: se mide por el fin de periodo del último trimestre; con el plazo de
+#    presentación (45 días) y un poco de margen salen unos 140 días.
+FUENTES_INGESTA = {
+    "form4":   ("Form 4 (compras de insiders)", 130),
+    "mercado": ("datos de mercado", 7),
+    "8k":      ("eventos 8-K", 21),
+    "13dg":    ("13D/G y shelf", 45),
+    "10q":     ("MD&A de los 10-Q", 140),
+}
+
 
 @dataclass(frozen=True)
 class Alerta:
@@ -68,6 +91,37 @@ class Alerta:
 
 
 # ---------- las consultas ----------
+
+def _dias(cur, sql: str):
+    """Días enteros que devuelve una consulta de un solo valor, o None si la
+    tabla está vacía (sin ninguna fila no hay 'última' de la que contar)."""
+    cur.execute(sql)
+    dias = cur.fetchone()[0]
+    return None if dias is None else int(dias)
+
+
+def leer_ingesta(cur) -> dict:
+    """Días desde lo más reciente que trajo cada fuente de datos. La frescura se
+    mide con el dato más nuevo que hay en la base, no con lo que dijo el script:
+    un script puede terminar con código 0 habiendo traído cero filas."""
+    return {
+        "form4": _dias(cur, "select current_date - max(fecha_transaccion) "
+                            "from insider_transactions where fecha_transaccion <= current_date"),
+        "mercado": _dias(cur, "select extract(day from now() - max(ultimo_update)) from empresas where activa"),
+        "8k": _dias(cur, "select extract(day from now() - max(fecha_registro)) from eventos_8k"),
+        "13dg": _dias(cur, "select extract(day from now() - max(fecha_registro)) from participaciones_activistas"),
+        "10q": _dias(cur, "select current_date - max(fecha_fin) from metricas_trimestrales "
+                          "where fecha_fin <= current_date"),
+    }
+
+
+def sec_contacto_configurado() -> bool:
+    """La SEC pide un contacto real en el User-Agent y devuelve 403 si no lo hay;
+    cada script de ingesta se traga ese error por empresa y sigue. Con el valor por
+    defecto (el texto 'configura-...') el sistema 'funciona' sin traer nada."""
+    contacto = os.getenv("SEC_CONTACT_EMAIL", "")
+    return "@" in contacto and "configura" not in contacto
+
 
 def leer_metricas(conn) -> dict:
     """Todo lo que necesitan las reglas, leído de la base en una pasada.
@@ -125,6 +179,8 @@ def leer_metricas(conn) -> dict:
             modelo: {"analisis": n, "pct_soportado": float(pct), "alucinaciones": alu}
             for modelo, n, pct, alu in cur.fetchall()
         }
+
+        ingesta = leer_ingesta(cur)
     finally:
         cur.close()
 
@@ -134,6 +190,8 @@ def leer_metricas(conn) -> dict:
         "gemini_429_hoy": gemini_429_hoy,
         "coste_hoy_usd": coste_hoy,
         "calidad": calidad,
+        "ingesta": ingesta,
+        "sec_contacto_ok": sec_contacto_configurado(),
     }
 
 
@@ -204,6 +262,34 @@ def evaluar(metricas: dict) -> list:
                 f"{modelo}: {c['alucinaciones']} análisis marcados ALUCINACION en {VENTANA_CALIDAD_DIAS} días."
             ))
 
+    if not metricas.get("sec_contacto_ok", True):
+        alertas.append(Alerta(
+            "sec_sin_contacto", "critica",
+            "SEC_CONTACT_EMAIL sin configurar en el .env: la SEC rechaza (403) las peticiones sin "
+            "un contacto real y la ingesta no trae nada, sin dar error."
+        ))
+
+    for clave, dias in sorted(metricas.get("ingesta", {}).items()):
+        nombre, umbral = FUENTES_INGESTA[clave]
+        if dias is None:
+            alertas.append(Alerta(
+                f"ingesta_{clave}_vacia", "critica",
+                f"Ingesta de {nombre}: no hay ningún dato en la base."
+            ))
+        elif dias > umbral:
+            alertas.append(Alerta(
+                f"ingesta_{clave}_parada", "critica",
+                f"Ingesta de {nombre}: lo más reciente es de hace {dias} días (aviso a partir de {umbral}). "
+                f"Revisa el log de ese paso."
+            ))
+
+    for paso in metricas.get("pasos_fallidos", []):
+        alertas.append(Alerta(
+            f"paso_fallido_{paso}", "critica",
+            f"El paso «{paso}» falló en esta pasada (o pasó del tiempo máximo y lo maté). "
+            f"Los datos de esa fuente no se han actualizado."
+        ))
+
     return alertas
 
 
@@ -215,11 +301,15 @@ def formatear(alertas: list) -> str:
     return f"⚠️ SmallCap Hunter — {len(alertas)} alerta(s)\n{cuerpo}"
 
 
-def revisar_y_avisar(conn, enviar: bool = True) -> list:
+def revisar_y_avisar(conn, enviar: bool = True, pasos_fallidos: list = None) -> list:
     """Evalúa, lo deja en el log y, si hay algo, manda UN mensaje. Nunca
-    lanza: una alerta que falla no puede tirar la pasada que la lanzó."""
+    lanza: una alerta que falla no puede tirar la pasada que la lanzó.
+    pasos_fallidos son los pasos de ingesta que el orquestador vio fallar en esta
+    pasada: eso no está en la base, solo lo sabe él."""
     try:
-        alertas = evaluar(leer_metricas(conn))
+        metricas = leer_metricas(conn)
+        metricas["pasos_fallidos"] = list(pasos_fallidos or [])
+        alertas = evaluar(metricas)
     except Exception as e:
         log.warning(f"No pude evaluar las alertas: {e}")
         return []
