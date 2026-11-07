@@ -55,8 +55,10 @@ de "citas débiles". El modelo conserva su veredicto en el JSON.
 
 ## Resultados
 
-Sobre las 25 candidatas actuales, último análisis de cada modelo con el
-protocolo 2.
+Sobre las 25 candidatas de entonces (19-oct), último análisis de cada modelo con el
+protocolo 2. A 7-nov hay 31 análisis por modelo con el protocolo 2 (incluyen
+re-análisis), y el resumen no se movió: Claude 56 % literales y 96 % con soporte,
+Gemini 65 % y 96 %, ninguno marcado `ALUCINACION`.
 
 | | Claude | Gemini |
 |---|---|---|
@@ -103,6 +105,8 @@ literales: 47 % a 55 % en Claude, 50 % a 63 % en Gemini.
 
 ## El Auditor
 
+> **Nota del 7-nov-2026.** Esta sección describe el Auditor v1, que daba un veredicto propio y ya no está en uso: el Auditor v2 no opina, da un sello por análisis (`VERIFICADO` / `CON_AVISOS`). Se conserva porque es la medida que motivó el cambio. Las cifras de aquí son las de aquel momento y se refieren a lo que el Auditor *declaraba*; la historia completa, incluida la diferencia entre lo declarado y la comparación real de veredictos, está en [hallazgos.md](hallazgos.md).
+
 Con el protocolo 2, el Auditor de Claude (que revisa a Gemini) empeoró el
 veredicto en las 25 auditorías. El de Gemini (que revisa a Claude) confirmó
 9, empeoró 12 y mejoró 4. Las citas nuevas de los Auditores tienen un
@@ -123,7 +127,7 @@ también los análisis de **Claude** (`experimento_auditor.py`, 24 empresas; la
 
 | Claude audita a... | Empeora el veredicto | Dice que la tesis no se sostiene |
 |---|---|---|
-| Gemini (producción) | 25 de 25 | — |
+| Gemini (producción) | 25 de 25 (31 de 31 con los datos de hoy) | — |
 | Claude (experimento) | 24 de 24 | 24 de 24 |
 
 Si fueran los análisis de Gemini los peores, Claude no habría empeorado

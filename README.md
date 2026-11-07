@@ -1,88 +1,157 @@
 # SmallCap Hunter
 
 [![tests](https://github.com/Guille6520/SmallcapHunter/actions/workflows/tests.yml/badge.svg)](https://github.com/Guille6520/SmallcapHunter/actions/workflows/tests.yml)
-![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-![Demostración del dashboard: panorama, ficha con citas en inglés y su traducción, chat y calidad por modelo](docs/demo.gif)
+**Criba small caps americanas con datos públicos de la SEC y deja unas pocas candidatas con evidencia citada, verificada por código y con un sello de cuánto fiarse de cada análisis.**
 
-Herramienta de investigación para un inversor: criba small caps americanas con
-datos públicos de la SEC y prepara, para las que pasan, un análisis con citas
-verificables que sirva de punto de partida. Busca señales tempranas —
-insiders comprando en cluster, crecimiento que se acelera, márgenes que
-mejoran — en empresas pequeñas, para investigarlas después por cuenta propia.
-No predice qué empresa subirá ni da recomendaciones: la decisión, y el resto
-de la investigación (noticias, eventos, el sector), son de quien la usa.
+![Demostración del dashboard: panorama, candidatas, ficha con citas en inglés y su traducción, sellos del Auditor y observabilidad](docs/demo.gif)
 
-Filosofía del sistema: precisión sobre recall. El objetivo no es puntuar
-miles de empresas, es dejar unas pocas con evidencia a la vista. Los números
-filtran primero (barato); los LLMs solo analizan a las supervivientes.
+## Qué es y qué no es
 
-Proyecto final del Bootcamp IA Fullstack — KeepCoding 2026.
+Soy inversor y quería una herramienta que hiciera por mí el trabajo pesado y aburrido: leer miles de formularios de insiders, quedarme con las pocas empresas que merece la pena mirar y enseñarme, con citas del documento original, por qué. La construí para usarla yo.
 
-> **Aviso.** Esto es un proyecto de portafolio sobre datos públicos de la
-> SEC, no un producto financiero. Los veredictos (`MUY_INTERESANTE`,
-> `INTERESANTE`...) son un nivel de interés para investigación propia,
-> nunca una recomendación de inversión. Ningún LLM debería decidir dónde
-> pones tu dinero — y menos uno gratuito con cuota de 20 llamadas al día.
+- **Es** una herramienta de investigación. Busca señales tempranas (varios directivos comprando a la vez, crecimiento que se acelera, márgenes que mejoran) en empresas pequeñas, para que luego las investigue yo por mi cuenta.
+- **No es** un predictor ni un consejo de inversión. **No hay evidencia de que su selección bata al mercado**; lo que he medido apunta más bien a lo contrario (ver [Lo que sé y lo que no](#lo-que-sé-y-lo-que-no)).
+- El «veredicto» (`MUY_INTERESANTE`, `INTERESANTE`, `NADA_INTERESANTE`) es **un nivel de interés para investigar**, no una predicción de que la acción suba. Lo dan dos modelos de lenguaje que no están calibrados y a veces cambian de opinión al re-analizar la misma empresa.
 
----
+Es mi proyecto final del Bootcamp de IA Fullstack de KeepCoding (2026). Todo el código, los datos y las medidas de este repositorio salen de mi propio sistema.
 
-## Arquitectura
+## Cómo funciona
 
-![Cómo decide SmallCap Hunter: tablero de investigación desde la evidencia pública de la SEC hasta el veredicto final](docs/architecture.svg)
+![Arquitectura: de los datos de la SEC a la candidata con sus votos y sellos](docs/architecture.svg)
 
----
+| Capa | Qué hace | Cómo |
+|---|---|---|
+| 1. Filtros binarios | Descarta casi todo | Capitalización entre 50 M y 2.000 M de dólares, bolsa válida (NYSE, NASDAQ, AMEX), cluster de compras (3 o más insiders distintos en 60 días, reciente) y al menos un comprador del cluster en la dirección (CEO, CFO...) |
+| 2. Score 0–40 | Ordena a las que pasan | Cuatro sub-scores de 0 a 10: precio (posición en el rango de 52 semanas), convicción de los insiders, aceleración del crecimiento (entre trimestres consecutivos, decididos por la fecha de cierre) y catalizador (márgenes y caja). Corte en 25 (configurable) |
+| 3. Agentes (LangGraph) | Analiza a las que superan el corte | Dos Detectives, un Auditor y un verificador de citas que es código, no un modelo (ver abajo) |
+| 4. RAG (pgvector) | Aporta casos históricos parecidos | Solo lo ve el Detective. Hoy está poco poblado (ver limitaciones) |
 
-## Requisitos previos
+Fuentes: Form 4 (compras de insiders), XBRL (métricas trimestrales), 10-Q (MD&A), 8-K (eventos), 13D/G (participaciones de más del 5 %) y yfinance (mercado).
 
-- Python 3.11+
-- Docker Desktop
-- Cuenta de API en [Anthropic Console](https://console.anthropic.com) (Claude Haiku 4.5, de pago — céntimos por análisis)
-- Cuenta gratuita en [Google AI Studio](https://aistudio.google.com) (Gemini Flash)
+### Qué lo hace distinto
 
----
+Un solo LLM que opina sobre una empresa es fácil de construir y difícil de creer. Lo que he intentado es que ninguna afirmación dependa de la palabra de un modelo.
 
-## Instalación
+- **Dos Detectives ciegos.** Claude Haiku 4.5 y Gemini 2.5 Flash analizan la misma empresa por separado, sin ver el análisis del otro, y votan. El veredicto de una empresa son esos dos votos, nada más. El desacuerdo se ve (en las 30 empresas con análisis de los dos, coinciden en el veredicto en 16, el 53 %) y es información útil.
+- **Verificador de citas determinista.** Cada cita de un análisis tiene que aparecer en el documento original. Lo comprueba un programa, sin otro modelo: exacta, sin puntuación, fragmentos unidos, compra de insiders que coincide con el Form 4, casi literal... Las citas traducidas, parafraseadas o inventadas no cuentan como respaldo. Con menos del 50 % de citas con soporte el análisis se marca `ALUCINACION`.
+- **Auditor cruzado que verifica en vez de opinar.** Claude audita a Gemini y Gemini a Claude. No da un veredicto: comprueba. Una parte es código (saca cada porcentaje e importe de la tesis y mira si está en el texto original) y otra es el modelo, acotado (revisa afirmación por afirmación con una cita literal que luego verifica el código, y solo puede absolver una cifra si enseña un cálculo cuyos operandos están de verdad en el texto). El modelo propone, el código comprueba.
+- **Sellos.** El resultado del Auditor es un sello por análisis: `VERIFICADO` o `CON_AVISOS` (cifras sin soporte, afirmaciones contradichas por el texto o riesgos omitidos con cita real). El sello no cambia el veredicto del Detective: dice cuánto fiarse de él.
 
-### 1. Clona el repositorio
+Por qué el Auditor es así, y no como empecé, es la parte más instructiva del proyecto: mi primer Auditor daba un veredicto propio, lo medí y era ruido. La historia completa está en [docs/hallazgos.md](docs/hallazgos.md).
+
+## Cifras actuales (7-nov-2026)
+
+Salen de mi base de datos y de la suite de tests; cambian en cada pasada.
+
+| Qué | Cifra |
+|---|---|
+| Empresas descubiertas | 11.251 (3.342 activas) |
+| Transacciones de insiders (Form 4) | 3.573.059; además 723 eventos 8-K y 894 participaciones 13D/G |
+| Pasan los filtros de la Capa 1 | 105 |
+| Candidatas (score ≥ 25 sobre 40) | 17 (16 de empresas aún activas), tras corregir el score de aceleración (ver [hallazgos](docs/hallazgos.md#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov)); eran 27 |
+| Empresas con algún análisis de Detective | 55 |
+| Análisis con el protocolo 2 actual (incluye reanálisis) | 62 (31 de Claude y 31 de Gemini) |
+| Citas con soporte en el documento (protocolo 2) | 96 % de media, en los dos modelos |
+| Análisis marcados `ALUCINACION` (protocolo 2) | 0 de 62 |
+| Sellos del Auditor v2 hasta ahora | 33 (en 18 empresas): 21 `VERIFICADO` y 12 `CON_AVISOS`. Faltan 13 análisis por verificar (8 empresas candidatas). Con aviso salen 10 de 15 análisis de Claude y 2 de 18 de Gemini |
+| Auditorías de la v1 (Auditor antiguo, con veredicto propio) conservadas como histórico | 130 |
+| Tests | 330, todos offline |
+| Gasto registrado en LLM desde el 29-sep | unos 3,3 $ estimados en 309 llamadas, todas de Claude (1,9 céntimos de media); Gemini va en el tier gratuito |
+
+Los 33 sellos son una primera pasada, no una evaluación: no sé aún qué tasa de falsas alarmas tiene el sello. Un dato que me hace desconfiar de él en vez de fiarme: de los 20 avisos, 14 son afirmaciones que el modelo da por contradichas por el texto (con una cita real) y solo 6 son cifras. Lo primero es justo la parte donde el modelo opina, y el caso de BFS (ver `docs/hallazgos.md`) es dudoso.
+
+## Lo que sé y lo que no
+
+Esta sección es la que más me importa. Un proyecto que solo cuenta lo que le salió bien no sirve para decidir nada.
+
+**1. No he demostrado que la señal bata al mercado.** Lo he intentado medir de varias formas y ninguna lo respalda:
+
+- *Validación histórica* (`descubrir_clusters_historicos.py`, `validacion_historica.py`). Busqué clusters de insiders en todo el histórico de mi base: 4.305 casos. Para saber si la empresa era de verdad una small cap *en ese momento* reconstruí su capitalización de la época (precio histórico por acciones en circulación). Solo pude validar **274** de los 4.305: 218 ya eran de otro tamaño, 415 no tienen precio histórico en Yahoo (deslistadas, sobre todo) y 3.398 no tienen dato de acciones en circulación para esa fecha. Es decir, la muestra es el 6 % de lo que encontré, y está sesgada hacia empresas que siguen cotizando.
+- *Backtest de rendimiento frente al Russell 2000 (IWM).* Hice un análisis exploratorio con esos 274 eventos que apuntaba en la misma dirección (exceso de retorno mediano negativo a 12 y 24 meses y la mayoría de los eventos por debajo del índice), pero **no conservo ni el script ni los resultados, así que no publico cifras: no puedo reproducirlas.** `backtest_rendimiento.py` (que sí está) se hizo para esta pregunta, pero solo escribe su resumen en el log y no guarda resultados. Rehacerlo con resultados guardados está en el roadmap.
+- *Recall sobre «ganadoras»* (`validacion_recall_ganadoras.py`, resultados en `resultados_test_ganadoras.csv`). De 141 empresas de mi base que multiplicaron por 3 o más desde su mínimo como small cap, 86 (61 %) habían mostrado el cluster antes. Es un número que impresiona y que no prueba nada: no hay grupo de control (cuántas empresas con cluster *no* subieron), las ganadoras se eligen sabiendo el resultado y solo veo las que siguen vivas.
+- *Veredictos de los agentes contra el resultado* (`backtest_capa3.py`, resultados en `resultados_ciego_mixtos.csv`). Hice que el Detective analizara en ciego (empresa anonimizada y años enmascarados) 57 casos históricos, con una versión anterior del Detective. Dio 46 `NADA_INTERESANTE`, 10 `INTERESANTE` y 1 `MUY_INTERESANTE`. El exceso mediano a 12 meses fue de -18 % tanto en los `INTERESANTE` como en los `NADA_INTERESANTE`: el veredicto no distinguía. Y en una prueba aparte con 4 empresas que acabaron subiendo mucho (`resultados_ciego_ganadoras.csv`), el agente dio `NADA_INTERESANTE` a las cuatro.
+
+Limitaciones de todo lo anterior: muestras pequeñas, sesgo de supervivencia (lo que deja de cotizar desaparece de los datos de precio, aunque la dirección neta del sesgo no está medida), mercado común para todas las empresas y eventos muy concentrados en 2022–2025 (comparten régimen). No tengo evidencia, ni a favor ni en contra, de que el sistema actual funcione como método de selección. Tampoco tengo evidencia de que lo contrario sea cierto: lo que sé es que los controles que he hecho no encuentran ventaja.
+
+**2. La hipótesis de fondo es una pregunta abierta, y la trato como tal.** La Capa 2 premia estar cerca de mínimos de 52 semanas (tesis V1). En la rama [`tesis-v2`](https://github.com/Guille6520/SmallcapHunter/tree/tesis-v2) hay la tesis contraria (premiar máximos, apoyada en George y Hwang, 2004), **pre-registrada** antes de ver resultados: el hash del commit es su sello de fecha. Son dos tesis distintas, no una mejora medida de la otra. Hoy hay una sola instantánea (26 candidatas en V1, 11 en V2, 4 en las dos; es anterior a la corrección del score de aceleración y habrá que repetirla) y la muestra de cada brazo solo permitiría ver diferencias enormes. El resultado más probable a 12 y 24 meses es «no concluyente». Los resultados por empresa no se publican.
+
+**3. La calidad del análisis sí la he medido, y es lo que funciona mejor.**
+
+| Citas del Detective | Protocolo 1 (antes) | Protocolo 2 (ahora) |
+|---|---|---|
+| Análisis marcados `ALUCINACION`, Claude | 10 de 21 (48 %) | 0 de 31 |
+| Análisis marcados `ALUCINACION`, Gemini | 20 de 51 (39 %) | 0 de 31 |
+| Citas copiadas literalmente, Claude / Gemini | 47 % / 50 % | 56 % / 65 % |
+| Citas con soporte en el texto, Claude / Gemini | no se medía | 96 % / 96 % |
+
+Cómo leerlo sin venderlo mejor de lo que es: la caída de `ALUCINACION` no es solo que los modelos inventen menos. Cuando volví a puntuar con el verificador nuevo las respuestas del prompt antiguo, sin llamar a ningún modelo, las marcas de Claude bajaron de 6 de 10 a 1 de 10 y las de Gemini se quedaron en 2 de 7. En Claude casi todo el salto es medir mejor; en Gemini, el cambio de prompt. La única cifra comparable sin truco es la de citas literales. Las muestras son pequeñas y no están emparejadas. Y el verificador comprueba que la evidencia **existe**, no que la interpretación sea correcta: una cita real con una explicación inventada pasa. Método y consultas en [docs/evaluacion-citas.md](docs/evaluacion-citas.md).
+
+**4. Lo que no sé del Auditor v2.**
+
+- Hay 33 sellos reales: pocos para evaluar el sello. Falta medir las falsas alarmas a escala: etiquetar a mano las 22 cifras que hoy marca el código y revisar a mano las 14 afirmaciones «contradichas».
+- Mi prueba sintética (20 análisis, con una cifra alterada a mano en 10) salió bien: el código detecta 10 de 10, con 1–2 falsas alarmas de 10. Pero es el caso fácil. Sobre los 85 análisis reales más recientes (el último de cada modelo en cada empresa), el comprobador de cifras marca alguna en 18 (21 %), 22 cifras en total, y no por igual: 16 de 32 análisis de Claude (50 %) frente a 2 de 53 de Gemini (4 %), porque Claude escribe muchas más cifras derivadas (sumas, porcentajes de crecimiento). Aún tengo que revisar a mano cuántas de esas 22 son errores y cuántas cálculos legítimos.
+- El sello hoy **no mira las afirmaciones sin respaldo ni las citas falsas del propio Auditor**. Con los 33 sellos actuales: de los 21 `VERIFICADO`, 9 tienen alguna afirmación sin respaldo en el texto y 7 alguna afirmación que el Auditor da por «respaldada» con una cita que no se verifica. Es decir, `VERIFICADO` hoy significa «sin cifras dudosas ni contradicciones», no «todo lo que dice el análisis está respaldado». Es una decisión abierta.
+- El comprobador de cifras es permisivo. En los textos de tres empresas, entre 77 y 79 de los 96 enteros del 5 al 100 aparecen en el documento, así que un porcentaje inventado suele pasar, y ver una cifra en el texto no prueba que signifique lo mismo. Tampoco hace la aritmética de un cálculo derivado: solo exige que dos operandos estén en el texto.
+- Aún no sé si el Auditor v2 reduce errores en la práctica, ni si una cifra o afirmación marcada era un error o una pedantería.
+
+**5. Otras limitaciones.**
+
+- Unas 55 empresas analizadas son una muestra pequeña para sacar conclusiones.
+- La cuota gratuita de Gemini (20 llamadas al día) limita a unas 6–10 empresas al día con el Auditor encendido.
+- El veredicto no es estable: al re-analizar la misma empresa con el mismo modelo, el veredicto cambió en 27 de 49 re-análisis (el 55 %). Parte puede deberse a datos nuevos o al cambio de protocolo, no solo a ruido del modelo, y no he separado las dos causas.
+- Los dos Detectives ven el mismo texto: «ciegos» quiere decir que no ven el análisis del otro, no que sean independientes entre sí.
+- El RAG está poco poblado: solo 172 de 67.495 trimestres y 494 de 723 eventos 8-K tienen embedding, y el Auditor no ve el contexto RAG. Sin embeddings el Detective funciona igual, sin ese bloque. Además, la similitud del vecino más cercano es alta para casi todo (mediana 0,87, entre 0,81 y 0,93, medida el 7-nov) y no hay umbral mínimo: siempre se pegan 3 casos. Hoy aporta poco.
+- Los veredictos casi no discriminan: en los 62 análisis del protocolo 2 no hay ningún `NADA_INTERESANTE` (42 `INTERESANTE` y 20 `MUY_INTERESANTE`, con la misma distribución en Claude y en Gemini). Sospecho anclaje por el score que ven en el prompt y por el corte de 25, pero no lo he medido.
+- El Detective solo ve los primeros 12.000 caracteres del MD&A de cada 10-Q (el texto medio tiene unos 50.000; 317 de 319 lo superan), mientras que el verificador comprueba las citas contra el texto completo: puede dar por buena una cita de un trozo que el modelo no vio.
+- La API no tiene autenticación ni límite de uso, y `POST .../analizar` gasta las claves de los modelos: está pensada para local.
+- Con Docker Compose la base arranca vacía y el orquestador queda fuera. Además, `backup_db.py` busca por defecto el contenedor `smallcap_hunter_db` (el del arranque manual): con Compose el contenedor se llama distinto (míralo con `docker compose ps`) y hay que ponerlo en `DB_CONTAINER` del `.env`.
+- Los precios vienen de yfinance, que no es una fuente oficial.
+
+## Vista personal de seguimiento
+
+Hay una vista opcional, de uso personal y **apagada por defecto**, que no se muestra ni se descarga nada salvo que se active con `MOSTRAR_SEGUIMIENTO=1` en el `.env`. No es un resultado del proyecto, no se documenta aquí con cifras y no es consejo de inversión.
+
+## Arranque rápido con Docker Compose
+
+Levanta Postgres con pgvector, la API y el dashboard con un comando.
 
 ```bash
 git clone https://github.com/Guille6520/SmallcapHunter.git
 cd SmallcapHunter
+cp .env.example .env        # rellena al menos DB_PASSWORD
+docker compose up -d --build
 ```
 
-### 2. Instala las dependencias
+- Dashboard: <http://localhost:8501>. API: <http://localhost:8000/docs>.
+- La base se crea **vacía** con `schema.sql` la primera vez. Los datos viven en el volumen `pgdata`.
+- Las claves de Anthropic y Gemini solo hacen falta para analizar. Para ver el dashboard y la API no.
+- El orquestador (la pasada que descarga datos y llama a los modelos) **no** está en Compose a propósito: lanza sus pasos como subprocesos y hace la copia de seguridad hablando con Docker. Se lanza desde tu máquina (ver abajo), con `DB_HOST=127.0.0.1` y `DB_PORT=5434` en el `.env`.
+- Puertos configurables con `DB_PORT`, `API_PORT` y `DASHBOARD_PORT`.
+
+## Arranque manual
+
+Requisitos: Python 3.12, Docker Desktop, una clave de [Anthropic](https://console.anthropic.com) (Claude Haiku 4.5, de pago, céntimos por análisis) y otra gratuita de [Google AI Studio](https://aistudio.google.com) (Gemini).
 
 ```bash
 pip install -r requirements.txt
-```
 
-### 3. Levanta PostgreSQL con pgvector
-
-```bash
 docker run -d --name smallcap_hunter_db \
   -e POSTGRES_PASSWORD=tu_password \
   -e POSTGRES_DB=smallcap_hunter \
   -p 5434:5432 \
   pgvector/pgvector:pg16
-```
 
-Aplica el schema:
-
-```bash
+# Aplicar el esquema
 # Linux / Mac
 docker exec -i smallcap_hunter_db psql -U postgres -d smallcap_hunter < schema.sql
-
-# Windows PowerShell (la redirección < no funciona en PowerShell)
+# Windows PowerShell (la redirección < no funciona)
 Get-Content schema.sql | docker exec -i smallcap_hunter_db psql -U postgres -d smallcap_hunter
 ```
 
-### 4. Variables de entorno
-
-Copia `.env.example` como `.env` y rellena los valores. Todos los
-scripts lo cargan automáticamente al arrancar (python-dotenv) — no hace
-falta definir nada en el terminal.
+Copia `.env.example` como `.env` y rellénalo. Todos los scripts lo cargan solos (python-dotenv):
 
 ```
 DB_HOST=127.0.0.1        # en Windows con Docker Desktop, NO usar "localhost"
@@ -93,587 +162,167 @@ DB_PASSWORD=tu_password
 ANTHROPIC_API_KEY=...
 GEMINI_API_KEY=...
 SEC_CONTACT_EMAIL=tu_email_real@dominio.com   # la SEC lo exige en el User-Agent
+# Opcionales: TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, BACKUP_DIR, DB_CONTAINER, MOSTRAR_SEGUIMIENTO
 ```
 
-
-
----
-
-## Uso
-
-### Ingesta de datos
+### Ingesta
 
 ```bash
-# 1. Carga el histórico de Form 4 (compras de insiders) desde la SEC
-python loader_backfill.py --desde 2015 --hasta 2026
-
-# 2. Enriquece cada empresa con métricas trimestrales XBRL
-python enriquecedor_xbrl.py
-
-# 3. Descarga datos de mercado (market cap, rango 52 semanas, bolsa)
-python mercado_yfinance.py
+python loader_backfill.py --desde 2015 --hasta 2026   # Form 4 histórico
+python enriquecedor_xbrl.py                           # métricas trimestrales XBRL
+python mercado_yfinance.py                            # market cap, rango 52 semanas, bolsa
 ```
-
-### Capa 4 — RAG (embeddings)
-
-Tras traer el texto (MD&A vía `ingesta_10q.py`, eventos vía `ingesta_8k.py`),
-genera los embeddings pendientes con Gemini (`gemini-embedding-001`, 1536
-dims para encajar en el índice `ivfflat` del schema):
-
-```bash
-python generar_embeddings_rag.py
-```
-
-Sin este paso, el Detective funciona exactamente igual pero sin el bloque
-de "casos históricos similares" — es opcional por diseño (ver
-`detective.buscar_casos_similares_rag`), no una dependencia dura.
 
 ### Pipeline de análisis
 
 ```bash
-# Capa 1: filtros binarios (tamaño, bolsa, cluster buying, C-suite)
-python filtro_capa1.py
+python filtro_capa1.py      # Capa 1: filtros binarios
+python scorer_capa2.py      # Capa 2: score 0-40
+python ingesta_10q.py       # MD&A del 10-Q más reciente de las candidatas
+python ingesta_8k.py        # eventos materiales (8-K) de los últimos 12 meses
+python ingesta_13dg.py      # participaciones de más del 5 % y shelf registrations
 
-# Capa 2: scoring numérico 0-40 (precio, convicción, aceleración, catalizador)
-python scorer_capa2.py
+# Opcional, Capa 4 (RAG): embeddings con gemini-embedding-001
+python generar_embeddings_rag.py
 
-# Texto MD&A del 10-Q más reciente para las candidatas finales
-python ingesta_10q.py
-
-# Eventos materiales (8-K) de los últimos 12 meses de las candidatas:
-# contratos, cambios de directivos, ampliaciones — lo que pasa ENTRE
-# trimestres. Solo los items relevantes (tabla configuracion), el resto
-# del 8-K es ruido administrativo
-python ingesta_8k.py
-
-# Participaciones >5% (13D/G — la versión institucional del cluster) y
-# detección de shelf registrations S-3/424B (riesgo de dilución)
-python ingesta_13dg.py
-
-# Capa 3: agentes LLM con verificación determinista de citas.
-# Recomendado — el grafo de LangGraph hace las tres cosas de golpe:
-# los dos Detectives en paralelo (fan-out) + el Auditor cruzado en
-# cuanto ambos terminan (fan-in). Es lo mismo que las tres líneas de
-# abajo, pero como un solo comando (y es lo que usa orquestador.py):
+# Capa 3 de una empresa: los dos Detectives en paralelo y el Auditor cruzado
 python grafo_capa3.py --ticker XXXX
 
-# Manual, modelo por modelo (para depurar uno solo):
-python detective.py --ticker XXXX --modelo claude
-python detective.py --ticker XXXX --modelo gemini
-python auditor.py --ticker XXXX     # audita cruzado: Claude revisa a Gemini y viceversa
+# O por separado, para depurar
+python detective.py --ticker XXXX --modelo claude    # o gemini
+python auditor.py --ticker XXXX                      # audita cruzado y guarda los sellos
 ```
 
-### Modo autónomo (orquestador)
+### Orquestador (modo autónomo)
 
-Todo lo anterior encadenado, con los agentes analizando SOLO empresas
-con datos nuevos desde su último análisis, y tope + pausas para la
-cuota gratuita diaria de Gemini (20 llamadas) y el gasto en Claude:
+Encadena todo lo anterior y analiza **solo** las empresas con datos nuevos desde su último análisis.
 
 ```bash
-python orquestador.py                 # una pasada completa
-python orquestador.py --solo-agentes  # salta la ingesta, solo la fase LLM
-python orquestador.py --daemon        # una pasada cada 48h (scheduler_horas)
+python orquestador.py                  # una pasada completa
+python orquestador.py --solo-agentes   # salta la ingesta, solo la fase de modelos
+python orquestador.py --completo       # incluye XBRL completo y mercado sin límite (lento)
+python orquestador.py --daemon         # una pasada cada 48 h
 ```
 
-La fase de agentes decide por modelo, no por empresa: a un modelo le toca
-una empresa si nunca la analizó, si hay datos nuevos (un Form 4 de compra
-o un 8-K) o si su último análisis es de un protocolo anterior
-(`version_protocolo`, ver más abajo). Antes de empezar cuenta cuánta cuota
-gratuita de Gemini queda hoy (20 peticiones al día, ~2 por empresa) y
-recorta la pasada a lo que cabe, en vez de gastar llamadas que ya sabe que
-van a dar 429; lo aplazado entra en la siguiente
-(`configuracion.gemini_limite_diario`, 0 = sin límite). Un modelo se
-retira del resto de la pasada tras 3 fallos seguidos (cuota agotada o
-proveedor caído), no al primero. Después corre una segunda fase que
-reintenta las auditorías que se quedaron sin guardar (JSON cortado, 503,
-cuota), con un tope de 3 fallos por ticker en 7 días; los 429 de cuota no
-cuentan para ese tope. El mismo tope vale para el Detective (por modelo y
-ticker), para que un texto que siempre da JSON roto no gaste una llamada de
-pago en cada pasada.
+Lo que hace por su cuenta: cuenta la cuota gratuita de Gemini que queda hoy y recorta la pasada a lo que cabe; retira un modelo del resto de la pasada tras 3 fallos seguidos, no al primero; reintenta lo que se quedó sin guardar (con tope de 3 fallos por empresa en 7 días); mata un paso que se cuelga (tiempo máximo por paso); descarta un análisis sin veredicto válido en vez de inventar uno; hace una copia de seguridad si la última tiene más de 20 h; guarda una foto de las candidatas para ver qué cambió entre pasadas; y manda alertas por Telegram (opcional) si algo se degrada. El Auditor está **encendido por defecto**; se apaga con la clave `auditor_activo` de la tabla `configuracion` (ver `interruptores.py`) sin borrar nada.
 
-Para que un fallo no pase desapercibido: cada subproceso tiene tiempo máximo
-(uno colgado se mata y cuenta como fallo), un análisis sin veredicto válido se
-descarta en vez de rellenarse con uno inventado, un análisis que no llega a
-guardarse no cuenta como hecho, y si la pasada se aborta o el *daemon* se
-encuentra una excepción llega un aviso a Telegram.
-
-Si `TELEGRAM_BOT_TOKEN` y `TELEGRAM_CHAT_ID` están configurados, cada
-análisis del Detective o el Auditor manda un aviso a tu Telegram con el
-ticker, el veredicto y las citas con soporte. Sin configurar, todo
-funciona igual — el aviso es cortesía, no dependencia.
-
-### Dashboard
+### Dashboard y API
 
 ```bash
 streamlit run dashboard.py
+uvicorn api:app --reload --port 8000     # Swagger en http://127.0.0.1:8000/docs
 ```
 
-Seis vistas:
+![Candidatas con el voto de cada Detective y su sello](docs/capturas/candidatas.png)
 
-- **Panorama:** el embudo completo y los últimos veredictos de los agentes.
-- **Candidatas:** ranking por score de Capa 2 y por veredicto.
-- **Sectores:** contexto para orientarse, aparte del análisis. Por cada sector
-  con candidatas, cómo se mueve su ETF de referencia frente al Russell 2000
-  (1, 3 y 12 meses) y titulares recientes del tema con enlace. Las small caps
-  casi no tienen prensa, pero su sector sí. Los agentes **no** ven nada de
-  esto, no entra en el score y no es una recomendación; un test lo vigila
-  (`tests/test_contexto_sector.py`). Los titulares salen de Google News (RSS) y,
-  cuando responde, de las noticias de Yahoo del ETF: son generales del tema y
-  pueden traer ruido. Se actualiza en cada pasada del orquestador, o a mano
-  con `python contexto_sector.py`.
-- **Empresa:** la ficha con scores, insiders, revenue, MD&A y el historial
-  de análisis del Detective y el Auditor. Cada análisis trae un
-  desplegable de citas: la cita original en inglés, su traducción (escrita
-  por el modelo, no verificada) y el resultado de la comprobación.
-- **Chat:** un LLM que ve el mismo contexto que el Detective para
-  conversar sobre cualquier candidata.
-- **Observabilidad:** coste, latencia y errores de cada llamada a un LLM,
-  y la calidad por modelo (ver abajo).
+![Ficha de una empresa con las citas en inglés, su traducción y la comprobación](docs/capturas/ficha.png)
 
-Hay además una vista opcional de uso personal, apagada por defecto, que
-guarda el precio de cada empresa el día de su análisis para consulta propia
-(`MOSTRAR_SEGUIMIENTO=1` en el `.env`; ver `seguimiento_senales.py`). No es un
-resultado del proyecto ni consejo de inversión.
+![Sellos del Auditor sobre los análisis](docs/capturas/sellos.png)
 
-### Observabilidad
+![Observabilidad: coste, fiabilidad y calidad de citas por modelo](docs/capturas/observabilidad.png)
 
-Cada llamada real a un modelo (Detective, Auditor, chat y resumen de
-negocio) se registra en la tabla `llm_calls` con los tokens reales que
-devuelve el proveedor, la latencia, el coste estimado y el error si lo
-hubo. De ahí sale la pestaña Observabilidad del dashboard:
+Vistas del dashboard: **Panorama** (embudo, últimos veredictos y qué cambió desde la última pasada), **Candidatas** (ranking con el voto de cada Detective y su sello), **Sectores** (contexto de ETF y titulares, que los agentes no ven y no entra en el score), **Empresa** (ficha con scores, insiders, MD&A, historial de análisis y citas con su verificación), **Chat** (un modelo con el mismo contexto que el Detective) y **Observabilidad**.
 
-- **Costes y fiabilidad:** llamadas, tasa de éxito, coste por modelo y por
-  día, latencia (p50/p95) y los últimos errores.
-- **Calidad por modelo y protocolo:** qué parte de las citas de cada
-  modelo aparece literal en el documento y qué parte tiene soporte según
-  el verificador, cuántos análisis se marcan ALUCINACION y cuánto
-  coinciden Claude y Gemini. Se calcula sobre lo ya guardado, sin llamadas
-  extra a ningún LLM.
+Endpoints de la API: `GET /health`, `GET /candidatas`, `GET /candidatas/{ticker}`, `GET /candidatas/{ticker}/similares` (RAG) y `POST /candidatas/{ticker}/analizar` (dispara la Capa 3 y bloquea 1–2 min).
 
-- **Coste por empresa:** lo que cuesta analizar cada ticker (Detective y
-  Auditor, con reintentos y fallos incluidos). Hoy son unos 4 céntimos de
-  media por empresa (sin contar experimentos puntuales como el del Auditor).
-- **Cuota de Gemini:** cuántas de las 20 peticiones gratuitas de hoy van
-  gastadas y cuándo se renuevan (medianoche del Pacífico, en hora de
-  Madrid). Sale de `llm_calls`, así que solo cuenta lo que hizo este
-  sistema.
-- **Errores por tipo:** cada fallo se guarda con su categoría (cuota 429,
-  proveedor saturado, timeout, JSON roto, JSON **cortado por el tope de
-  tokens**...). Importa porque cada una se arregla distinto: una cuota se
-  espera o se paga, un JSON truncado se arregla subiendo `max_tokens`.
-- **Alertas:** al final de cada pasada del orquestador (`alertas.py`, o a
-  mano con `python alertas.py --enviar`) se revisa la salud del sistema y,
-  solo si hay algo, llega un mensaje a Telegram: modelo con más del 25 % de
-  llamadas fallidas, respuestas truncadas, cuota gratuita de Gemini casi
-  agotada o agotada, gasto diario por encima de 1 $ y calidad de citas
-  baja o análisis marcados ALUCINACION. Las mismas reglas salen como banner
-  en la pestaña, y están probadas sin base de datos
-  (`tests/test_alertas.py`).
-- **Ingesta parada:** los scripts de ingesta se tragan los errores por
-  empresa y terminan con código 0 aunque no traigan nada, así que no me
-  fío de lo que digan: la revisión mide la edad del dato más nuevo de cada
-  fuente (Form 4, mercado, 8-K, 13D/G, 10-Q) y avisa si pasa de un umbral
-  que sale de cómo publica esa fuente (los Form 4 llegan por trimestres,
-  por eso el suyo es de 130 días y el de mercado de 7). También avisa si
-  un paso de la pasada falla o se pasa del tiempo máximo, y si
-  `SEC_CONTACT_EMAIL` no está configurado (la SEC devuelve 403 sin
-  contacto real). Probado en `tests/test_alertas_ingesta.py`.
-
-Nació de una necesidad real: para decidir en sep-2026 si cambiar el
-modelo gratuito que fallaba, hubo que comprobar a mano el panel de cada
-proveedor. Con el registro, el mismo dato sale del propio sistema.
-También sirvió para ver cosas que a ojo no se veían, como que Claude
-cortaba el JSON del Auditor justo en el tope de tokens (`tokens_salida`
-igual al máximo en todas las llamadas fallidas).
-
-### API (FastAPI)
-
-Segunda interfaz sobre los mismos datos, para consumo por programa en vez
-de por un humano en el navegador — reutiliza la misma capa de acceso a
-datos que el dashboard y el Detective, no duplica consultas:
+### Copia de seguridad
 
 ```bash
-uvicorn api:app --reload --port 8000
+python backup_db.py            # pg_dump + comprobación con pg_restore --list, conserva las últimas 7
+python backup_db.py --listar
 ```
 
-Documentación interactiva (Swagger) en `http://127.0.0.1:8000/docs`.
-Endpoints: `GET /candidatas`, `GET /candidatas/{ticker}`,
-`GET /candidatas/{ticker}/similares` (Capa 4 — RAG expuesto directamente),
-`POST /candidatas/{ticker}/analizar` (dispara la Capa 3 completa vía el
-grafo de LangGraph, en proceso).
+Una copia que no se puede leer se borra y se avisa. Probé la restauración en una base temporal con los mismos recuentos que la de producción. Apunta `BACKUP_DIR` a otro disco o a la nube si quieres que sobreviva a un fallo del equipo.
 
-### Tests
+## Observabilidad y alertas
+
+Cada llamada a un modelo (Detective, Auditor, chat y resumen de negocio) se registra en `llm_calls` con tokens reales, latencia, coste estimado y el tipo de error si lo hubo. De ahí sale la pestaña Observabilidad: coste por modelo y por empresa, latencia, cuota de Gemini, errores por tipo (cuota, proveedor saturado, timeout, JSON roto o cortado por `max_tokens`) y calidad de citas por modelo y protocolo. Gracias a ese registro vi que Claude cortaba el JSON justo en el tope de tokens, no por fallo del modelo.
+
+`alertas.py` revisa la salud del sistema al final de cada pasada y, solo si hay algo, avisa por Telegram: modelo con más del 25 % de llamadas fallidas, respuestas truncadas, cuota de Gemini casi agotada, gasto diario por encima de 1 $, calidad de citas baja, paso fallido o SEC sin contacto configurado, y **ingesta parada** (más de 130 días sin Form 4 nuevos, 7 sin mercado, 21 sin 8-K, 45 sin 13D/G o 140 sin 10-Q). Esto último porque mis scripts de ingesta se tragan los errores por empresa y terminan con código 0 aunque no traigan nada.
+
+## Estructura del proyecto
+
+```
+├── schema.sql  requirements.txt  pytest.ini  Dockerfile  docker-compose.yml  .env.example  LICENSE
+├── normalizar.py                  # reglas únicas de limpieza de datos
+│
+│   # Ingesta
+├── loader_backfill.py             # Form 4 (ZIPs trimestrales de la SEC)
+├── enriquecedor_xbrl.py           # métricas trimestrales (companyfacts + SIC)
+├── mercado_yfinance.py            # market cap, precio, rango 52 semanas, bolsa
+├── ingesta_10q.py                 # MD&A del 10-Q
+├── ingesta_8k.py                  # eventos materiales 8-K
+├── ingesta_13dg.py                # participaciones de más del 5 % y shelf
+├── contexto_sector.py  sectores.py  # ETF de sector y titulares (contexto, no análisis)
+│
+│   # Pipeline
+├── filtro_capa1.py                # 4 filtros binarios
+├── scorer_capa2.py                # 4 sub-scores (0-40)
+├── detective.py                   # Detective: tesis + citas + RAG
+├── verificador_citas.py           # verificador determinista de citas (protocolo 2)
+├── auditor.py                     # Auditor: verifica cifras y afirmaciones, da sello
+├── verificacion_cifras.py         # la parte de código del Auditor
+├── verificaciones.py              # sellos y su tabla propia
+├── votos.py                       # qué veredicto enseña el dashboard (el de los Detectives)
+├── grafo_capa3.py                 # Detectives + Auditor como grafo de LangGraph
+├── embeddings.py  generar_embeddings_rag.py   # Capa 4 (RAG)
+│
+│   # Operación
+├── orquestador.py                 # pasada completa o daemon cada 48 h
+├── interruptores.py               # claves de configuración (Auditor encendido/apagado)
+├── cuota_gemini.py                # cuota gratuita diaria de Gemini
+├── cambios.py                     # qué cambió entre pasadas
+├── backup_db.py                   # copia de seguridad verificada
+├── alertas.py  notificador_telegram.py  errores_llm.py
+├── seguimiento_senales.py         # vista personal opcional (apagada por defecto)
+│
+│   # Interfaces
+├── dashboard.py                   # Streamlit
+├── api.py                         # FastAPI
+│
+│   # Validación (solo lectura, no son tests unitarios)
+├── descubrir_clusters_historicos.py  validacion_historica.py  ingesta_10q_historico.py
+├── backtest_rendimiento.py  backtest_capa3.py  validacion_recall_ganadoras.py
+├── enriquecer_historico_casos.py
+├── experimento_auditor.py         # separó el sesgo del Auditor v1 de la calidad de cada Detective
+├── validadas_historicas.csv  resultados_*.csv
+│
+├── docs/                          # architecture.svg, demo.gif, capturas/, hallazgos.md, evaluacion-citas.md
+└── tests/                         # 330 tests offline (ver abajo)
+```
+
+## Tests y CI
 
 ```bash
 pip install -r requirements.txt
 pytest
 ```
 
-La suite (`tests/`) es toda offline — sin BD, sin API keys, sin red — así
-que corre igual en tu máquina que en CI (ver el badge arriba). Cubre la
-lógica pura del pipeline (normalización, filtros, scoring, regex del
-MD&A), el verificador de citas (categorías y umbral de ALUCINACION), el
-reintento de auditorías, la degradación del RAG cuando no hay
-embeddings o falla la API, la orquestación del grafo de LangGraph
-(fan-out/fan-in, qué pasa si un modelo falla) y los endpoints de la API.
+330 tests, **todos offline**: sin base de datos, sin claves, sin red. Cubren la lógica pura (normalización, filtros, score), el verificador de citas, el comprobador de cifras y los sellos, las reglas de votos e interruptores, los cambios entre pasadas, la copia de seguridad, las alertas, la cuota de Gemini, la política de retirada de modelos del orquestador, el grafo de LangGraph, el RAG y su degradación, y los endpoints de la API. GitHub Actions los ejecuta en cada push (`.github/workflows/tests.yml`, Python 3.12).
 
-Los scripts de validación histórica (`validacion_historica.py`,
-`backtest_rendimiento.py`, `validacion_recall_ganadoras.py`...) NO están
-en `tests/` a propósito: tardan 30-60 min, necesitan red y Postgres, y
-miden si la hipótesis del sistema se sostiene contra datos reales — es
-otra cosa que un test unitario. Ver la sección de abajo.
+Qué cubren de verdad (cobertura de líneas medida con `pytest-cov`, 56 % del total): el núcleo está muy cubierto (verificador de citas 98 %, sellos y votos 100 %, API 94 %, orquestador 87 %, Auditor 80 %); las ingestas, poco (entre el 21 y el 31 %); el dashboard, casi nada (12 %: lo probé a mano y con una prueba de humo); y los scripts de validación histórica, nada, porque no son parte del pipeline. Más tests no es mejor por sí mismo: revisé la suite y no encontré redundancia (solo un par de tests con cuerpos casi iguales, y prueban escenarios distintos). Lo que falta es probar las ingestas contra respuestas de la SEC guardadas.
 
-### Validación histórica de la hipótesis
+Los scripts de validación histórica no están en `tests/` a propósito: tardan 30–60 minutos, necesitan red y Postgres, y miden otra cosa (si la hipótesis se sostiene), no si el código hace lo que dice.
 
-Scripts de solo lectura que comprueban la hipótesis contra datos reales:
+## Roadmap realista
 
-```bash
-# ¿Qué empresas tuvieron alguna vez la señal exacta que busco?
-python descubrir_clusters_historicos.py
+En el orden en que lo haría:
 
-# ¿Cuáles eran de verdad small caps EN ESE MOMENTO? (market cap histórico,
-# sin look-ahead bias) — genera validadas_historicas.csv
-python validacion_historica.py
+0. **Revisar el diseño del propio score con la literatura**: los pesos, qué señales cuentan y cómo se mide la aceleración se decidieron sin contrastarlos. Es lo siguiente, y puede cambiar qué empresas son candidatas.
+1. **Medir las falsas alarmas del Auditor a escala**: etiquetar a mano las 22 cifras que hoy marca el código.
+2. **Verificar los 13 análisis que quedan pendientes** y decidir si muchas afirmaciones sin respaldo deben dar aviso.
+3. **Medir la inestabilidad del veredicto** con datos fijos: re-analizar la misma empresa varias veces y contar cuánto cambia.
+4. **Probar un modelo mayor como Detective** (Sonnet) en unas decenas de empresas, para ver si la calidad compensa el coste.
+5. **Resolver las deslistadas** en los backtests (una fuente de datos que conserve las empresas que dejan de cotizar) y guardar los resultados en el repo con su script.
+6. **Filtro de compra cosmética**: los datos ya están (Item 3.02 del 8-K, shelf del 13D/G) y llegan a los agentes como contexto; falta convertirlos en filtro duro de la Capa 1.
+7. **Migraciones del esquema** (hoy `schema.sql` solo crea la base desde cero y las tablas posteriores las crean los propios scripts).
+8. **Demo pública de solo lectura** con datos congelados y sin claves.
+9. **Ratio de convicción real** (importe frente a compensación anual del insider, desde el DEF 14A) y **track record del insider**.
 
-# Corpus de 10-Q DE LA ÉPOCA de cada cluster, para el RAG
-python ingesta_10q_historico.py --muestra 40
-
-# ¿La señal batió al Russell 2000 a 12 y 24 meses?
-python backtest_rendimiento.py
-
-# Recall: de las ganadoras reales de mi ventana de datos, ¿cuántas
-# mostraron el cluster ANTES de subir? (~30-60 min, usa yfinance)
-python validacion_recall_ganadoras.py --limite 50
-```
-
-Estos contrastes tienen límites que conviene tener presentes: muestra pequeña,
-sesgo de supervivencia (las empresas que dejan de cotizar desaparecen de los
-datos de precio) y un mercado que es el mismo para todas las empresas de la
-muestra. Por eso no se presentan como prueba de nada.
-
-### Tesis en investigación
-
-El proyecto no da la selección por buena: la trata como una pregunta abierta. Hoy
-se prueban dos hipótesis opuestas sobre la misma variable, **dónde está el precio
-dentro de su rango de 52 semanas** cuando los insiders compran. No hay una
-versión mejor que la otra; son dos preguntas distintas.
-
-| | Qué premia | Estado |
-|---|---|---|
-| **Tesis original** (esta rama, `main`) | Precio cerca de **mínimos** de 52 semanas: un insider que compra con la acción hundida muestra más convicción | En uso. No demostrada |
-| **Tesis alternativa** (rama [`tesis-v2`](https://github.com/Guille6520/SmallcapHunter/tree/tesis-v2)) | Precio cerca de **máximos**, apoyada en la literatura sobre el máximo de 52 semanas (George y Hwang, 2004) | En seguimiento. Registrada de antemano |
-| **Control** | Ignora la posición | Referencia para las dos |
-
-Las tres comparten todo lo demás: filtros, resto de puntuaciones, corte y análisis
-con modelos. Solo cambia el sub-score de precio, así que la comparación es limpia.
-
-**Cómo se hace sin engañarse**
-
-- La hipótesis, los criterios y los límites están escritos en
-  [`docs/tesis-v2.md`](https://github.com/Guille6520/SmallcapHunter/blob/tesis-v2/docs/tesis-v2.md)
-  **antes** de ver ningún resultado. El hash del commit es su sello de fecha, y no
-  se edita: cualquier cambio sería otra versión.
-- Cada pasada del sistema guarda qué empresas marca cada tesis ese día, sin tocar
-  los análisis.
-- La evaluación se hace a 12 y 24 meses frente al mercado de small caps (IWM).
-
-**Qué no se espera de esto.** Con unas decenas de empresas por tesis y un mercado
-que es el mismo para todas, solo se verían diferencias enormes. Lo más probable es
-que el resultado sea «no concluyente». El valor está en el registro honesto y en
-acumular tiempo, no en demostrar nada pronto. Los resultados por empresa no se
-publican: el proyecto es informativo y no es consejo de inversión.
-
----
-
-## Estructura del proyecto
-
-```
-smallcap_hunter/
-├── schema.sql                        # PostgreSQL 16 + pgvector
-├── requirements.txt
-├── pytest.ini
-├── LICENSE
-├── normalizar.py                     # reglas únicas de limpieza de datos
-│
-│   # Ingesta
-├── loader_backfill.py                # Form 4 (ZIPs trimestrales de la SEC)
-├── enriquecedor_xbrl.py              # métricas trimestrales (companyfacts + SIC)
-├── mercado_yfinance.py               # market cap, precio, rango 52w, bolsa
-├── ingesta_10q.py                    # texto MD&A del 10-Q (para la Capa 3)
-├── ingesta_8k.py                     # eventos materiales 8-K por item (para la Capa 3)
-├── ingesta_13dg.py                   # participaciones >5% + detección de shelf
-├── orquestador.py                    # el pipeline completo corriendo solo (48h)
-│
-│   # Pipeline
-├── filtro_capa1.py                   # 4 filtros binarios de descarte
-├── scorer_capa2.py                   # 4 sub-scores numéricos (0-40)
-├── detective.py                      # agente LLM: tesis + citas verificables + RAG (Capa 4)
-├── verificador_citas.py              # verificador determinista de citas (v2, por categorías)
-├── errores_llm.py                    # categorías de error de las llamadas a un LLM
-├── alertas.py                        # revisión de salud del sistema + aviso por Telegram
-├── seguimiento_senales.py            # vista personal opcional: precio de cada empresa el día de su análisis
-├── cuota_gemini.py                   # cuota gratuita diaria de Gemini: cuenta y recorte de la pasada
-├── auditor.py                        # agente LLM cruzado que impugna la tesis
-├── grafo_capa3.py                    # Detective(s) + Auditor como grafo de LangGraph
-│
-│   # Capa 4 — RAG
-├── embeddings.py                     # wrapper de gemini-embedding-001
-├── generar_embeddings_rag.py         # backfill de metricas_trimestrales/eventos_8k.embedding
-│
-│   # Interfaz y alertas
-├── dashboard.py                      # Streamlit: embudo, fichas, sectores y chat LLM
-├── sectores.py                       # mapa SIC -> sector -> ETF de referencia (contexto, no análisis)
-├── contexto_sector.py                # precios de ETFs de sector y titulares para la vista Sectores
-├── api.py                            # FastAPI: candidatas, ficha, RAG, disparar análisis
-├── notificador_telegram.py           # aviso por Telegram tras cada análisis
-│
-│   # Tests (offline, ver .github/workflows/tests.yml)
-├── tests/
-│   ├── conftest.py
-│   ├── test_pipeline_offline.py      # normalización, filtros, scoring, regex, citas
-│   ├── test_verificador_citas.py     # categorías del verificador y umbral de ALUCINACION
-│   ├── test_auditorias_pendientes.py # reintento de auditorías, selección del Auditor
-│   ├── test_errores_llm.py           # clasificación de errores, JSON truncado
-│   ├── test_alertas.py               # reglas de alerta y envío por Telegram
-│   ├── test_alertas_ingesta.py       # ingesta parada: umbrales por fuente, pasos fallidos, contacto SEC
-│   ├── test_seguimiento_senales.py   # cálculo de la vista personal de precios, con series inventadas
-│   ├── test_cuota_gemini.py          # cuota diaria y recorte de la pasada del orquestador
-│   ├── test_contexto_sector.py       # mapa de sectores, movimiento del ETF, titulares y que los análisis no lo lean
-│   ├── test_robustez_agentes.py      # veredicto inválido, guardado que devuelve si guardó, auditoría que falla sola
-│   ├── test_robustez_orquestador.py  # tiempos máximos, daemon, escape de Telegram, token fuera del log, API
-│   ├── test_rag_retrieval.py         # RAG y su degradación elegante
-│   ├── test_grafo_capa3.py           # orquestación LangGraph (fan-out/fan-in)
-│   └── test_api.py                   # endpoints de FastAPI
-│
-│   # Validación (solo lectura, no toca producción — no son tests unitarios)
-├── descubrir_clusters_historicos.py
-├── validacion_historica.py
-├── ingesta_10q_historico.py
-├── backtest_rendimiento.py
-├── validacion_recall_ganadoras.py
-├── experimento_auditor.py            # separa el sesgo del Auditor de Claude del rigor (ver Resultados)
-└── validadas_historicas.csv          # generado por validacion_historica.py
-```
-
----
-
-## Pipeline
-
-```
-Form 4 + XBRL (SEC) + yfinance
-      ↓   más de 11.000 empresas descubiertas
-Capa 1: filtros binarios (market cap 50M-2B, bolsa, cluster 3+ insiders/60d, C-suite)
-      ↓   ~100 empresas pasan (cifras de nov-2026; cambian cada pasada)
-Capa 2: scoring numérico (precio 52W + convicción + aceleración + catalizador)
-      ↓   ~25 candidatas (score ≥ 25/40, configurable en la tabla configuracion —
-          corte deliberadamente ancho: el embudo fino lo hacen los agentes)
-Capa 3: Detective → Auditor cruzado (Claude Haiku 4.5 y Gemini Flash, votos ciegos),
-        orquestados como un grafo de LangGraph (grafo_capa3.py: fan-out a
-        los dos Detectives, fan-in al Auditor cruzado)
-        con el MD&A del 10-Q + eventos 8-K + señales de mercado (short
-        interest, shelf registrations, 13D/G) + Capa 4 (RAG: casos
-        históricos semánticamente similares) como contexto,
-        + verificador determinista de citas contra los textos originales
-      ↓
-Veredicto de interés (no es consejo de inversión):
-  MUY_INTERESANTE / INTERESANTE / NADA_INTERESANTE / ALUCINACION
-```
-
-Dos interfaces sobre el mismo dato: `dashboard.py` (Streamlit, para un
-humano) y `api.py` (FastAPI, para consumo por programa).
-
-Aparte del pipeline, y sin entrar en él, el dashboard enseña un **contexto de
-sector** (ETF de referencia y titulares, ver «Sectores» arriba) para quien
-investiga a mano. Es información: ni los agentes ni el score lo leen.
-
-### Verificación de citas (protocolo 2)
-
-Los modelos citan el documento en su idioma original (inglés) y aportan la
-traducción aparte (`cita_es`, que se enseña en el dashboard pero no se
-verifica). `verificador_citas.py` clasifica cada cita sin llamar a ningún
-LLM: exacta, exacta ignorando puntuación, fragmentos unidos con `...`,
-compra de insiders que coincide con el Form 4, casi literal o cifras de la
-misma tabla cuentan como **con soporte**; traducida, parafraseada, score
-del sistema o sin soporte, no. Con menos del 50 % de citas con soporte el
-análisis se marca `ALUCINACION`; entre el 50 y el 80 % solo lleva el aviso
-de "citas débiles". Se guardan los dos porcentajes (el literal estricto y
-el de soporte) para poder comparar con el protocolo anterior.
-
-Qué no detecta: una cita real a la que el modelo le cuelga una explicación
-inventada. Para eso está el Auditor cruzado.
-
-Cada análisis guarda `version_protocolo` en su JSON; el orquestador trata
-como pendiente el de un protocolo anterior y lo rehace (las filas viejas se
-conservan). También reintenta las auditorías que quedaron sin guardarse.
-
----
-
-## Resultados: qué cambió con el protocolo 2
-
-Medido sobre las 25 candidatas actuales (score ≥ 25/40), analizadas por
-Claude y por Gemini, antes y después de cambiar el prompt y el verificador
-de citas. Los números salen de la pestaña Observabilidad, no de una hoja
-aparte.
-
-| | Protocolo 1 (antes) | Protocolo 2 (ahora) |
-|---|---|---|
-| Análisis marcados ALUCINACION, Claude | 10 de 21 (48 %) | 0 de 25 |
-| Análisis marcados ALUCINACION, Gemini | 20 de 51 (39 %) | 0 de 25 |
-| Citas copiadas literalmente, Claude | 47 % | 55 % |
-| Citas copiadas literalmente, Gemini | 50 % | 63 % |
-| Citas con soporte en el texto, Claude / Gemini | no se medía | 96 % / 95 % |
-
-De las 456 citas del protocolo 2, solo 21 (el 5 %) no tienen soporte: 7 de
-168 en Claude y 14 de 288 en Gemini.
-
-**Cómo leerlo, sin venderlo mejor de lo que es.**
-
-- **La caída de ALUCINACION no es solo que los modelos inventen menos.**
-  Cuando volví a puntuar con el verificador nuevo las respuestas del
-  prompt antiguo (el lote del 14-oct, sin llamar a ningún modelo), las
-  marcas de Claude bajaron de 6 de 10 a 1 de 10, y las de Gemini se
-  quedaron en 2 de 7. Casi todas las citas "alucinadas" eran traducciones
-  al español, fragmentos unidos con `...`, guiones distintos, líneas de la
-  lista de insiders (que no están en el MD&A) o filas de tabla recompuestas.
-  En Claude el salto se explica sobre todo por medir mejor; en Gemini, por
-  el cambio de prompt.
-- **La única cifra comparable sin truco es la de citas literales**, porque
-  se calcula igual en los dos protocolos: sube ocho puntos en Claude y
-  trece en Gemini al pedir la cita en inglés, sin traducir, y la
-  traducción aparte.
-- **El verificador comprueba que la evidencia existe, no que la
-  interpretación sea correcta.** Una cita real con una explicación
-  inventada pasa. Para eso está el Auditor cruzado.
-- **Las muestras son pequeñas y no están emparejadas.** El protocolo 1 son
-  los análisis históricos (otras empresas y otras fechas); el protocolo 2,
-  las 25 de hoy.
-- **Nada de esto demuestra que la selección acierte.** Mide la calidad del
-  análisis (citas, coste, fiabilidad), no si las empresas elegidas rinden más
-  que el mercado. Esa hipótesis de fondo está sin demostrar y se trata como una
-  pregunta abierta (ver «Tesis en investigación»).
-
-**Otros datos que salieron del análisis**
-
-- **Claude y Gemini coinciden en el veredicto en 13 de 25 empresas (52 %).**
-  Los dos dan MUY_INTERESANTE a tres (ADTN, HROW y VITL), y al menos uno a
-  quince.
-- **El Auditor de Claude empeoró el veredicto en las 25 auditorías** (a
-  Gemini); el de Gemini confirmó 9, empeoró 12 y mejoró 4. Para separar rigor
-  de sesgo, hice que Claude auditara también sus propios análisis
-  (`experimento_auditor.py`): empeoró 24 de 24 y dijo que la tesis no se
-  sostenía en los 24. Es decir, el sesgo es del Auditor de Claude, no de la
-  calidad de cada Detective. Además, en 8 de esas 24 el veredicto no cambió y
-  aun así lo etiquetó como "EMPEORA": esa etiqueta no es fiable.
-- **El coste real** desde el 14-oct es de 1,60 $ en 160 llamadas (Claude y
-  Gemini), con la migración, las pruebas y el chat incluidos: unos 2 céntimos por llamada
-  de Claude. Gemini va en el tier gratuito.
-- **Fiabilidad:** en una semana cada modelo falló en torno al 10 % de las
-  llamadas, sobre todo 503 puntuales. Gracias al registro de tokens se vio
-  que el JSON cortado de Claude era el tope de `max_tokens` y no el modelo
-  (2000, luego 4000 y ahora 8000).
-
-El método completo, el desglose por tipo de cita y las consultas para
-reproducirlo están en [docs/evaluacion-citas.md](docs/evaluacion-citas.md).
-
----
-
-## Qué queda pendiente incluso dentro de lo ya implementado
-
-Honestidad ante todo: RAG, LangGraph y FastAPI existen y funcionan (ver
-`tests/`), pero con límites concretos que no escondo:
-
-- **El Auditor no ve el contexto RAG** — `buscar_casos_similares_rag` solo
-  se llama desde `detective.py`. El Auditor relee el MD&A con ojo crítico
-  pero no recibe los casos históricos similares que sí ve el Detective.
-- **El corpus RAG empieza vacío** — hay que correr
-  `generar_embeddings_rag.py` explícitamente tras la ingesta de texto;
-  sin eso, `buscar_casos_similares_rag` devuelve `[]` y el Detective
-  funciona exactamente igual que antes de la Capa 4 (degradación
-  elegante a propósito, no un fallo silencioso).
-- **El grafo de LangGraph es secuencial dentro de cada nodo** — el
-  fan-out/fan-in reemplaza la orquestación manual, pero no paraleliza
-  con hilos/async; para dos llamadas HTTP a APIs distintas (Claude/Gemini)
-  esto es aceptable, no lo sería con una carga mucho mayor.
-- **La API es síncrona y sin cola de tareas** — `POST
-  /candidatas/{ticker}/analizar` bloquea 10-30s (dos LLMs + verificador
-  de citas). Correcto para el volumen real del proyecto, no para un
-  servicio con muchos usuarios concurrentes.
-- **La API no tiene autenticación ni límite de uso** — está pensada para
-  correr en local. Quien la exponga a una red debe ponerle antes una capa de
-  acceso, porque `POST .../analizar` gasta las claves de los modelos.
-- **No hay copia de seguridad automática de la base de datos** — Postgres corre
-  en un contenedor sin volcados programados.
-- **La hipótesis de fondo no está demostrada** — ni la selección por mínimos de
-  52 semanas ni la alternativa. Ver «Tesis en investigación».
-
-## Roadmap (pendiente, en orden de prioridad)
-
-- **Filtro de compra cosmética** — los datos ya están (Item 3.02 del 8-K
-  y `shelf_activa` del 13D/G); falta convertirlos en filtro duro de
-  Capa 1 en vez de solo contexto para los agentes
-- **Ratio de convicción real** — importe / compensación anual del insider
-  (necesita parsear el DEF 14A, tablas HTML de compensaciones)
-- **Adopción de mercado (Capa 4)** — Google Trends como proxy gratuito de
-  si el producto despega en el mundo real
-- **Agente de monitoring (V2)** — guardián de noticias sobre las
-  MUY_INTERESANTE: clasifica cada noticia como catalizador / ruido /
-  tesis rota comparándola contra la tesis original del Detective
-- **Módulo macro top-down** — el contexto de sector (ETF y titulares) ya
-  existe como panel informativo en el dashboard. Falta la parte macro
-  (tipos, materias primas, regulación) y, si se decide, un resumen del
-  tema hecho por un modelo, siempre aparte de los Detectives para no
-  contaminar su análisis ciego
-- **Track record del insider** — ponderar la convicción según el acierto
-  histórico de ese directivo en sus compras anteriores
-- **Profundidad de balance** — vencimientos de deuda, concentración de
-  clientes y dilución por SBC desde las notas del 10-K
-- **Ranker ML** — sustituir los pesos manuales de la Capa 2 por un modelo
-  entrenado con los casos históricos validados y sus retornos reales
-  - **Agente Red Team** — tercer agente que impugna el veredicto del Auditor
-- **Dashboard filtrable por nivel de interés** — hoy el ranking del
-  dashboard solo se navega por el score de Capa 2 (`order by score_total
-  desc`); falta un filtro/selector por veredicto (MUY_INTERESANTE /
-  INTERESANTE / NADA_INTERESANTE / ALUCINACION) para poder ver de un
-  vistazo, por ejemplo, solo las candidatas que ambos agentes confirmaron
-- **Verificador de citas en el chat** — hoy es la única pieza del
-  sistema que responde sin pasar por `verificar_citas()` (es
-  conversación libre, no JSON estructurado); habría que forzar al chat
-  a citar de forma parseable y reutilizar el mismo verificador
-- **Afinar las alertas** — hoy los umbrales son constantes y cada pasada
-  reenvía lo que siga activo (no recuerda lo ya avisado). Faltaría
-  guardarlos en la tabla `configuracion`, no repetir un aviso ya enviado y
-  una alerta de "el orquestador lleva días sin correr"
-- **Corregir al Auditor de Claude** — empeora el veredicto casi siempre, también
-  el de sus propios análisis (ver Resultados), así que su "EMPEORA" no
-  informa. Lo más barato: calcular la relación con el veredicto del Detective
-  en código a partir de los dos veredictos, en vez de fiarse de la etiqueta
-  del modelo, y probar un prompt que le pida justificar qué cambiaría el
-  veredicto antes de bajarlo
-- **Dockerfile y `docker-compose.yml`** — hoy el sistema solo corre
-  montado a mano en una máquina. Un compose con Postgres + pgvector y la
-  app permitiría levantarlo con un comando, y la CI podría construir la
-  imagen en cada push
-- **Demo pública de solo lectura** — el dashboard con datos congelados y
-  sin claves de ningún LLM (el chat y el botón de analizar gastan las
-  claves de quien lo despliega), en un servicio gratuito
-- **Tablas en el verificador de citas** — una cita real que resume una
-  tabla (p. ej. tres porcentajes de un 13D) puede quedar sin soporte si
-  sus cifras están lejos entre sí en el texto; hoy exige que estén a menos
-  de 40 tokens
-- **El estado `analizada` de `empresas`** — está en el esquema pero ningún
-  paso del pipeline lo escribe; usarlo (o quitarlo) para no depender de
-  inferir "analizada" desde la tabla de análisis
-- **Migraciones del esquema con Alembic** — hoy `schema.sql` solo sirve
-  para crear la base desde cero, y cada cambio posterior (una columna,
-  una tabla) se aplica a mano sobre la base que ya existe. Con
-  migraciones versionadas en SQL (el proyecto no usa ORM) se aplicarían
-  igual en cualquier base, y la CI podría comprobar que el esquema se
-  crea limpio. Es viable sin tocar el resto del código: pide un
-  directorio de migraciones y una revisión inicial con el esquema actual
-  
-
----
+Dejo fuera a propósito un ranker de machine learning: con 55 análisis y sin evidencia de ventaja, entrenar pesos sería ajustar ruido.
 
 ## Licencia
 
-MIT — ver [LICENSE](LICENSE).
+MIT, ver [LICENSE](LICENSE).
+
+> Proyecto de portafolio sobre datos públicos de la SEC, no un producto financiero. Ningún modelo de lenguaje debería decidir dónde pones tu dinero.
