@@ -1,0 +1,16 @@
+# Lo que no debe entrar en la imagen: secretos, copias de la base, datos y basura.
+.env
+.git
+.gitignore
+backups/
+datos/
+pruebas_auditor/
+__pycache__/
+*.pyc
+.pytest_cache/
+tests/
+*.csv
+*.dump
+.env.*
+.venv*/
+.github/

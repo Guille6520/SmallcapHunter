@@ -14,16 +14,24 @@ on:
 jobs:
   pytest:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
+      # 3.12: la misma versión que usa el Dockerfile, para las que requirements.txt
+      # fija versiones con ruedas publicadas.
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: "pip"
 
       - name: Instalar dependencias
         run: pip install -r requirements.txt
 
+      # dashboard.py ejecuta Streamlit al importarlo y casi ningún test lo toca: al menos
+      # que compile, para que un error de sintaxis no llegue a main sin que nadie lo vea.
+      - name: Comprobar que todo el código compila
+        run: python -m compileall -q .
+
       - name: Ejecutar tests
-        run: pytest -v
+        run: python -m pytest tests -q

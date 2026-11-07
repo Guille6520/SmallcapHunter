@@ -1,0 +1,74 @@
+# SmallCap Hunter — base de datos, API y dashboard con un solo comando:
+#
+#   docker compose up -d --build
+#
+# Dashboard: http://localhost:8501    API: http://localhost:8000/docs
+#
+# Lee las variables del .env de la carpeta (DB_PASSWORD es obligatoria; las claves de
+# Anthropic/Gemini/Telegram son opcionales para ver el dashboard y la API, y necesarias
+# solo para analizar). La base se crea vacía con schema.sql la primera vez; los datos
+# viven en el volumen «pgdata» y sobreviven a `docker compose down` (solo `down -v` los borra).
+#
+# El orquestador (la pasada diaria que descarga datos y llama a los LLM) NO está aquí
+# a propósito: hace la copia de seguridad hablando con Docker y lanza sus pasos como
+# subprocesos, y desde dentro de un contenedor eso no funciona sin dar acceso a Docker.
+# Se lanza desde tu máquina: `python orquestador.py --daemon`.
+#
+# Los puertos del host son configurables (DB_PORT, API_PORT, DASHBOARD_PORT) para poder
+# tener esto levantado a la vez que otro Postgres; dentro de la red de Docker los
+# servicios hablan entre sí por su nombre (db:5432), no por esos puertos.
+
+name: smallcap_hunter
+
+x-app: &app
+  build: .
+  depends_on:
+    db:
+      condition: service_healthy
+  env_file:
+    - path: .env
+      required: false
+  environment:
+    DB_HOST: db          # dentro de la red de Docker, la base se llama «db»
+    DB_PORT: "5432"
+    DB_NAME: smallcap_hunter
+    DB_USER: postgres
+    DB_PASSWORD: ${DB_PASSWORD:?define DB_PASSWORD en el .env}
+  restart: unless-stopped
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: smallcap_hunter
+      POSTGRES_PASSWORD: ${DB_PASSWORD:?define DB_PASSWORD en el .env}
+    ports:
+      # Solo desde esta máquina (127.0.0.1): ni la base, ni la API (que puede lanzar
+      # análisis de pago) ni el dashboard (cuyo chat llama a un LLM) llevan autenticación,
+      # así que no se publican en la red local. Para abrirlos a otros equipos, quita el prefijo.
+      - "127.0.0.1:${DB_PORT:-5434}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Solo se ejecuta cuando el volumen está vacío (primera vez).
+      - ./schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d smallcap_hunter"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *app
+    command: ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+    ports:
+      - "127.0.0.1:${API_PORT:-8000}:8000"
+
+  dashboard:
+    <<: *app
+    command: ["streamlit", "run", "dashboard.py", "--server.port", "8501", "--server.address", "0.0.0.0", "--server.headless", "true"]
+    ports:
+      - "127.0.0.1:${DASHBOARD_PORT:-8501}:8501"
+
+volumes:
+  pgdata:

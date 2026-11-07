@@ -1,9 +1,11 @@
 # SmallCap Hunter — dependencias del proyecto
 # Instalar con: pip install -r requirements.txt
 #
-# Solo lo que el código usa de verdad. Las dependencias de componentes
-# del roadmap (API, dashboard, alertas) van comentadas al final — se
-# descomentan cuando ese componente exista, no antes.
+# Solo lo que el código usa de verdad (API, dashboard, alertas y tests incluidos).
+# Al final, comentadas, quedan ideas que NO están implementadas: no se instalan.
+#
+# google-genai y anthropic NO tienen la versión fijada todavía (mejora pendiente): sus
+# SDKs cambian a menudo, y una versión futura podría romper alguna llamada.
 
 # Base de datos
 psycopg2-binary==2.9.9      # cliente PostgreSQL
@@ -29,6 +31,7 @@ python-dotenv==1.0.1        # carga variables de entorno desde .env
 
 # Interfaces (dashboard.py y api.py). Las alertas de Telegram no
 # necesitan librería propia: notificador_telegram.py usa requests directamente.
+pydantic>=2,<3              # modelos de respuesta de api.py. Lo trae fastapi, pero api.py lo importa directamente
 streamlit==1.45.1
 altair>=5.0,<6              # gráficos de la pestaña Observabilidad. Lo trae streamlit, pero dashboard.py lo importa y usa xOffset (Altair 5+)
 fastapi==0.115.6
@@ -38,7 +41,7 @@ uvicorn[standard]==0.34.0
 pytest==8.3.4
 httpx==0.28.1
 
-# --- Roadmap: descomentar cuando exista el componente ---
+# --- Ideas NO implementadas (no hay código que las use); no descomentar sin añadirlo ---
 # xgboost==2.1.3            # ranker ML de la Capa 2.5
 # scikit-learn==1.6.1       # validación temporal del ranker
 # schedule==1.2.2

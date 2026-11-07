@@ -14,3 +14,11 @@ datos/
 
 # Pruebas manuales de auditores (prompts con texto de la SEC y la clave; no se suben)
 pruebas_auditor/
+
+backups/
+*.dump
+
+# Otras variantes del .env (claves reales); la plantilla .env.example sí se sube
+.env.*
+!.env.example
+.streamlit/secrets.toml
