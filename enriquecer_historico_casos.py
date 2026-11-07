@@ -2,6 +2,9 @@
 enriquecer_historico_casos.py — relleno los trimestres XBRL de la ÉPOCA
 para los casos de un experimento histórico.
 
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano, solo para
+preparar los datos de los backtests; el orquestador no lo lanza.
+
 Por qué existe: el enriquecedor normal descarga los últimos ~8
 trimestres de cada empresa activa. Para las empresas graduadas (hoy
 >2B) eso significa 2024-2026 — y sus clusters de 2015-2023 se quedan

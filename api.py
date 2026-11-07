@@ -41,6 +41,7 @@ from detective import (
     formatear_casos_similares_rag,
 )
 from grafo_capa3 import ejecutar_grafo_capa3
+from verificaciones import VERSION_AUDITOR, asegurar_esquema as asegurar_esquema_verificaciones
 
 load_dotenv()
 
@@ -72,7 +73,7 @@ app = FastAPI(
 @contextmanager
 def conexion():
     """
-    Una conexión de solo lectura por request. No reutilizo un pool
+    Una conexión por request (autocommit, pensada para consultas de lectura). No reutilizo un pool
     global a propósito: es una API de bajo tráfico (uso personal /
     portafolio, no un producto con miles de usuarios concurrentes), así
     que la simplicidad de abrir y cerrar por request vale más que la
@@ -138,7 +139,10 @@ def listar_candidatas(limite: int = 50, solo_analizadas: bool = False):
     Ranking de candidatas. Por defecto, el mismo ranking de Capa 2 que
     muestra el panorama del dashboard (score_total desc, sin veredicto
     LLM todavía). Con solo_analizadas=true, en cambio, devuelvo las que
-    YA pasaron por el Detective/Auditor, con su veredicto más reciente.
+    YA pasaron por algún Detective, con el veredicto más reciente de un
+    Detective (no el de una auditoría de la v1, que daba un veredicto propio
+    y era ruido: ver el README). El sello del Auditor v2 de cada análisis
+    (tabla verificaciones) lo da la ficha, en /candidatas/{ticker}.
     """
     limite = max(1, min(limite, 200))
 
@@ -146,15 +150,29 @@ def listar_candidatas(limite: int = 50, solo_analizadas: bool = False):
         cur = conn.cursor()
         try:
             if solo_analizadas:
+                # El veredicto más reciente de un Detective por empresa (solo filas con
+                # veredicto_preliminar: las del Auditor v1 y las de score quedan fuera), con
+                # su score de Capa 2 si lo tiene (una empresa que ya no pasa Capa 1 sale
+                # sin score, no con un 0 inventado), las de mejor score primero.
                 cur.execute(
                     """
-                    select distinct on (e.ticker)
-                        e.ticker, e.nombre, e.sector, e.market_cap_usd,
-                        a.score_total, a.veredicto
-                    from auditorias a
-                    join empresas e on e.id = a.empresa_id
-                    where a.veredicto is not null
-                    order by e.ticker, a.fecha_analisis desc
+                    with ultimo as (
+                        select distinct on (a.empresa_id) a.empresa_id, a.veredicto
+                        from auditorias a
+                        where a.veredicto is not null
+                          and a.respuesta_llm ? 'veredicto_preliminar'
+                        order by a.empresa_id, a.fecha_analisis desc
+                    )
+                    select e.ticker, e.nombre, e.sector, e.market_cap_usd,
+                           s.score_total, u.veredicto
+                    from ultimo u
+                    join empresas e on e.id = u.empresa_id
+                    left join lateral (
+                        select score_total from auditorias
+                        where empresa_id = e.id and veredicto is null
+                        order by fecha_analisis desc limit 1
+                    ) s on true
+                    order by s.score_total desc nulls last, e.ticker
                     limit %s
                     """,
                     (limite,),
@@ -194,17 +212,28 @@ def ficha_candidata(ticker: str):
         if not contexto:
             raise HTTPException(status_code=404, detail=f"{ticker} no encontrado")
 
+        asegurar_esquema_verificaciones(conn)
         cur = conn.cursor()
         try:
+            # Solo análisis de Detective (los que llevan veredicto_preliminar; las auditorías
+            # de la v1 daban un veredicto propio que era ruido y no se mezclan), cada uno con
+            # el sello que le puso el Auditor v2, si ya lo verificó.
             cur.execute(
                 """
-                select modelo_llm, veredicto, respuesta_llm, verificacion_citas, fecha_analisis
-                from auditorias
-                where empresa_id = %s and veredicto is not null
-                order by fecha_analisis desc
+                select a.modelo_llm, a.veredicto, a.respuesta_llm, a.verificacion_citas, a.fecha_analisis,
+                       v.sello, v.modelo_auditor
+                from auditorias a
+                left join lateral (
+                    select sello, modelo_auditor from verificaciones
+                    where detective_auditoria_id = a.id and version_auditor = %s
+                    order by fecha desc limit 1
+                ) v on true
+                where a.empresa_id = %s and a.veredicto is not null
+                  and a.respuesta_llm ? 'veredicto_preliminar'
+                order by a.fecha_analisis desc
                 limit 10
                 """,
-                (contexto["empresa_id"],),
+                (VERSION_AUDITOR, contexto["empresa_id"]),
             )
             analisis = cur.fetchall()
         finally:
@@ -223,8 +252,10 @@ def ficha_candidata(ticker: str):
                 "modelo": modelo, "veredicto": veredicto,
                 "respuesta": respuesta, "verificacion_citas": verificacion,
                 "fecha": fecha.isoformat() if fecha else None,
+                # Sello del Auditor sobre este análisis (VERIFICADO / CON_AVISOS) o null si aún no se verificó
+                "sello": sello, "sello_puesto_por": modelo_auditor,
             }
-            for modelo, veredicto, respuesta, verificacion, fecha in analisis
+            for modelo, veredicto, respuesta, verificacion, fecha, sello, modelo_auditor in analisis
         ],
     }
 
@@ -271,8 +302,9 @@ def analizar_candidata(ticker: str, modelos: Optional[str] = None):
     necesita aislamiento de proceso; una request HTTP ya está aislada
     por naturaleza).
 
-    Es una llamada SÍNCRONA y puede tardar 10-30s (dos LLMs + el
-    verificador de citas) — para un volumen alto de peticiones esto
+    Es una llamada SÍNCRONA y tarda del orden de 1-2 minutos (según llm_calls:
+    cada Detective ronda los 35 s, en paralelo, y después el Auditor hace dos
+    verificaciones de 25-40 s cada una; más si hay reintentos) — para un volumen alto de peticiones esto
     debería ser una tarea en background con polling, pero para el uso
     real del proyecto (unas pocas empresas al día) no compensa la
     complejidad de una cola de tareas.

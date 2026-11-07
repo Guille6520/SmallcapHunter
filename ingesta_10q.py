@@ -2,10 +2,9 @@
 ingesta_10q.py — descargo y guardo el texto narrativo (MD&A, Item 2)
 del 10-Q más reciente de cada candidata final.
 
-Este es el hueco que no habíamos cerrado: todo lo que tengo hasta ahora
-es XBRL (números estructurados) y Form 4 (transacciones) — pero el RAG
-que diseñé desde el principio necesita el texto narrativo real, que
-viene de un endpoint distinto de la SEC y nunca lo había descargado.
+Por qué existe: XBRL (números estructurados) y Form 4 (transacciones) no
+traen el texto narrativo, y tanto el Detective como el RAG lo necesitan.
+Ese texto viene de otro endpoint de la SEC (el propio filing del 10-Q).
 
 Qué hago, paso a paso:
   1. Consulto el índice de filings de la empresa (mismo endpoint
@@ -19,9 +18,7 @@ Qué hago, paso a paso:
      de filing — un 10-Q siempre se presenta semanas después de que
      cierre el trimestre que describe)
   5. Guardo el texto en la columna texto_mda. El embedding lo dejo para
-     un paso posterior aparte (generar_embeddings_rag.py), porque
-     depende de qué proveedor de embeddings se decida usar (Claude/Gemini
-     no son OpenAI).
+     un paso posterior aparte (generar_embeddings_rag.py, con Gemini)
 
 No genero ningún embedding aquí a propósito — separar "conseguir el
 texto limpio" de "vectorizarlo" evita mezclar dos decisiones distintas

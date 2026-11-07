@@ -4,6 +4,9 @@ para el RAG de la Capa 3, usando una muestra de las empresas que
 validacion_historica.py confirmó que de verdad tuvieron el patrón
 cuando eran pequeñas.
 
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PASO DIARIO: se ejecuta a mano y el
+orquestador no lo lanza (el que sí corre en cada pasada es ingesta_10q.py).
+
 Esto es distinto de ingesta_10q.py en un punto crítico: aquél trae el
 10-Q MÁS RECIENTE de hoy, que tiene sentido para las candidatas
 actuales. Aquí necesito el 10-Q DE LA ÉPOCA del cluster — si Bloom

@@ -2,8 +2,12 @@
 backtest_capa3.py — el experimento que le faltaba al proyecto: ¿la capa
 LLM añade valor sobre la señal numérica, o solo decora?
 
-El backtest de la señal cruda (backtest_rendimiento.py) ya dio su
-respuesta incómoda: el cluster de insiders, solo, no bate al Russell.
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano, tarda y
+gasta llamadas a un LLM (de pago con Claude, de cuota gratuita con Gemini); el orquestador y el dashboard no lo usan.
+
+El backtest de la señal cruda (backtest_rendimiento.py) mide si el cluster de
+insiders, solo, bate al Russell; no encontré evidencia de que lo haga (muestra
+pequeña y sesgo de supervivencia, ver el README).
 Este script mide lo que viene después: si el veredicto del agente
 (MUY_INTERESANTE / INTERESANTE / NADA_INTERESANTE) DISCRIMINA — si los
 MUY_INTERESANTE históricos rindieron mejor que los NADA_INTERESANTE y

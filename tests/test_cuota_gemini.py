@@ -7,7 +7,7 @@ el orquestador. La BD y el grafo van simulados.
 import cuota_gemini
 import orquestador
 
-CONFIG = {"corte": 25, "max_analisis": 10, "pausa_llm": 0, "gemini_limite": 20}
+CONFIG = {"corte": 25, "max_analisis": 10, "pausa_llm": 0, "gemini_limite": 20, "auditor_activo": True}
 
 
 def test_cuesta_gemini_lo_que_dice_el_docstring():
@@ -106,6 +106,8 @@ def test_sin_aplazadas_el_resultado_no_cambia(monkeypatch):
 def test_las_auditorias_pendientes_tambien_se_recortan(monkeypatch):
     llamadas = []
     monkeypatch.setattr(orquestador, "conectar_db", lambda: _Conn())
+    # sin base de datos real: no hay que crear la tabla de sellos (y así el test no depende del orden)
+    monkeypatch.setattr(orquestador, "asegurar_esquema_verificaciones", lambda conn: None)
     monkeypatch.setattr(orquestador, "auditorias_pendientes",
                         lambda *a, **k: [("A", ["claude"]), ("B", ["claude"]), ("C", ["gemini"])])
     monkeypatch.setattr(cuota_gemini, "usadas_hoy", lambda conn: 19)

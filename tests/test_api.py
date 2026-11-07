@@ -124,6 +124,33 @@ def test_listar_candidatas_limite_se_acota(monkeypatch, cliente):
     assert capturado["params"][0] <= 200
 
 
+def test_solo_analizadas_no_devuelve_el_veredicto_de_una_auditoria_v1(monkeypatch, cliente):
+    """El Auditor de la v1 guardaba su propio veredicto en la misma tabla que los Detectives
+    (declaró EMPEORA en 74 % de los casos y su veredicto real fue más bajo en 45 %). La lista de empresas analizadas tiene
+    que leer solo filas de Detective, que son las que llevan veredicto_preliminar."""
+    consultas = []
+
+    @contextmanager
+    def fake_conexion():
+        conn = _FakeConn([])
+        cursor_original = conn.cursor
+
+        def cursor_que_espia():
+            c = cursor_original()
+            c.execute = lambda query, params=None: consultas.append(query)
+            return c
+
+        conn.cursor = cursor_que_espia
+        yield conn
+
+    monkeypatch.setattr(api, "conexion", fake_conexion)
+
+    r = cliente.get("/candidatas?solo_analizadas=true")
+
+    assert r.status_code == 200
+    assert "veredicto_preliminar" in consultas[0]
+
+
 def test_ficha_candidata_no_encontrada_devuelve_404(monkeypatch, cliente):
     monkeypatch.setattr(api, "obtener_contexto_empresa", lambda conn, ticker: None)
 
@@ -145,6 +172,7 @@ def test_ficha_candidata_encontrada(monkeypatch, cliente):
         "scores": (7, 6, 8, 5, 26), "texto_mda": "MD&A de prueba",
     }
     monkeypatch.setattr(api, "obtener_contexto_empresa", lambda conn, ticker: contexto_falso)
+    monkeypatch.setattr(api, "asegurar_esquema_verificaciones", lambda conn: None)
 
     @contextmanager
     def fake_conexion():
@@ -240,3 +268,46 @@ def test_analizar_candidata_no_encontrada_devuelve_404(monkeypatch, cliente):
     r = cliente.post("/candidatas/NOEXISTE/analizar")
 
     assert r.status_code == 404
+
+
+def test_la_ficha_solo_trae_analisis_de_detective_y_les_pega_su_sello(monkeypatch, cliente):
+    """Antes mezclaba las auditorías de la v1 (un veredicto propio, ruido) con los análisis, sin
+    distinguirlas y sin el sello del Auditor v2."""
+    from datetime import datetime
+
+    contexto_falso = {
+        "empresa_id": 1, "ticker": "ASPS", "nombre": "Altisource", "sector": "Real estate",
+        "market_cap": 100_000_000, "bolsa": "NASDAQ", "scores": (7, 6, 8, 5, 26), "texto_mda": "x",
+    }
+    monkeypatch.setattr(api, "obtener_contexto_empresa", lambda conn, ticker: contexto_falso)
+    monkeypatch.setattr(api, "asegurar_esquema_verificaciones", lambda conn: None)
+    consultas = []
+    filas = [
+        ("claude", "INTERESANTE", {"veredicto_preliminar": "INTERESANTE"}, {}, datetime(2026, 11, 7), "CON_AVISOS", "gemini"),
+        ("gemini", "NADA_INTERESANTE", {"veredicto_preliminar": "NADA_INTERESANTE"}, {}, datetime(2026, 11, 6), None, None),
+    ]
+
+    @contextmanager
+    def fake_conexion():
+        conn = _FakeConn(filas)
+        original = conn.cursor
+
+        def cursor_que_espia():
+            c = original()
+            c.execute = lambda query, params=None: consultas.append((query, params))
+            return c
+
+        conn.cursor = cursor_que_espia
+        yield conn
+
+    monkeypatch.setattr(api, "conexion", fake_conexion)
+
+    r = cliente.get("/candidatas/asps")
+
+    assert r.status_code == 200
+    sql, params = consultas[0]
+    assert "veredicto_preliminar" in sql, "solo filas de Detective"
+    assert "from verificaciones" in sql and params[0] == api.VERSION_AUDITOR
+    analisis = r.json()["analisis"]
+    assert analisis[0]["sello"] == "CON_AVISOS" and analisis[0]["sello_puesto_por"] == "gemini"
+    assert analisis[1]["sello"] is None, "un análisis aún sin verificar no inventa un sello"

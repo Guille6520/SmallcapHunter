@@ -174,22 +174,35 @@ def score_conviccion(conn, empresa_id: int, config: dict) -> int:
     return amplitud + intensidad
 
 
+# Dos trimestres son consecutivos si sus cierres distan entre ~2,3 y ~3,8 meses. Un trimestre
+# de 13 semanas dura 91 días y los calendarios de 52/53 semanas lo estiran o encogen unos días.
+MIN_DIAS_ENTRE_TRIMESTRES = 70
+MAX_DIAS_ENTRE_TRIMESTRES = 115
+
+
 def _serie_trimestral(conn, empresa_id: int, campo: str) -> list:
     """
-    Traigo la serie de un campo (revenue, operating_cash_flow...) con su
-    año y trimestre fiscal, ordenada de más antiguo a más reciente y
-    saltando los NULL. Devuelvo tuplas (anio, trimestre, valor) para
-    poder comprobar después si dos filas son trimestres consecutivos
-    de verdad — sin el año/trimestre no hay forma de saberlo.
+    Traigo la serie de un campo (revenue, operating_cash_flow...) con la FECHA DE CIERRE
+    de cada trimestre, ordenada de más antiguo a más reciente y saltando los NULL.
+    Devuelvo tuplas (fecha_fin, valor).
+
+    Uso la fecha y no el año/trimestre fiscal etiquetado (anio_fiscal, trimestre). Esas
+    etiquetas salen del último informe que menciona cada periodo (la reexpresión más
+    reciente gana, ver enriquecedor_xbrl.py): un trimestre de 2024 que se vuelve a citar
+    como cifra comparativa en un informe de 2025 puede quedar etiquetado como 2025. Con
+    etiquetas así, 2025Q2 (cierre 30-jun-2024) y 2025Q3 (cierre 30-sep-2025) parecían
+    trimestres seguidos y estaban separados por 15 meses. La fecha de cierre no depende
+    de cuándo se entregó el informe (aunque llegue tarde, el periodo termina el mismo
+    día), y es la que dice de verdad si dos trimestres son seguidos.
     """
     cur = conn.cursor()
     try:
         cur.execute(
             f"""
-            select anio_fiscal, trimestre, {campo}
+            select fecha_fin, {campo}
             from metricas_trimestrales
-            where empresa_id = %s and {campo} is not null
-            order by anio_fiscal, trimestre
+            where empresa_id = %s and {campo} is not null and fecha_fin is not null
+            order by fecha_fin
             """,
             (empresa_id,)
         )
@@ -198,9 +211,10 @@ def _serie_trimestral(conn, empresa_id: int, campo: str) -> list:
         cur.close()
 
 
-def _indice_trimestre(anio: int, trimestre: int) -> int:
-    """Trimestres como enteros consecutivos: 2023Q4 y 2024Q1 distan 1."""
-    return anio * 4 + (trimestre - 1)
+def _son_consecutivos(fecha_antes, fecha_despues) -> bool:
+    """¿Son dos cierres de trimestres seguidos? Se decide por los días entre las fechas."""
+    dias = (fecha_despues - fecha_antes).days
+    return MIN_DIAS_ENTRE_TRIMESTRES <= dias <= MAX_DIAS_ENTRE_TRIMESTRES
 
 
 def score_temporal(conn, empresa_id: int) -> int:
@@ -212,17 +226,18 @@ def score_temporal(conn, empresa_id: int) -> int:
     es lineal (aburrida). Una que crece 5%, 9%, 16% está acelerando — ese
     es el patrón pre-explosivo que busco.
 
-    Solo calculo la tasa entre trimestres fiscales ADYACENTES. Si a la
-    serie le falta un trimestre por un hueco de datos, antes empalmaba
-    Q4-2023 con Q3-2024 como si fueran consecutivos y la "tasa QoQ"
-    resultante era ficción. Prefiero perder ese par a medir basura.
+    Solo calculo la tasa entre trimestres ADYACENTES, decididos por la fecha de
+    cierre (ver _serie_trimestral). Si a la serie le falta un trimestre por un
+    hueco de datos, empalmaría dos cierres lejanos como si fueran consecutivos
+    y la "tasa QoQ" resultante sería ficción. Prefiero perder ese par a medir
+    basura.
 
     Necesito al menos 4 trimestres para ver una tendencia en la tasa.
     """
     filas = _serie_trimestral(conn, empresa_id, "revenue")
 
     # Filtro revenues negativos o cero: no puedo calcular tasa sobre ellos
-    filas = [(a, t, r) for a, t, r in filas if r and r > 0]
+    filas = [(f, r) for f, r in filas if r and r > 0]
 
     if len(filas) < 4:
         return 0
@@ -230,10 +245,10 @@ def score_temporal(conn, empresa_id: int) -> int:
     # Uso los últimos 8 trimestres como máximo — más atrás es menos relevante
     filas = filas[-8:]
 
-    # Tasa de crecimiento solo entre trimestres fiscales consecutivos
+    # Tasa de crecimiento solo entre trimestres consecutivos (por fecha de cierre)
     tasas = []
-    for (a0, t0, r0), (a1, t1, r1) in zip(filas, filas[1:]):
-        if _indice_trimestre(a1, t1) - _indice_trimestre(a0, t0) == 1:
+    for (f0, r0), (f1, r1) in zip(filas, filas[1:]):
+        if _son_consecutivos(f0, f1):
             tasas.append((r1 - r0) / r0)
 
     if len(tasas) < 3:
@@ -295,7 +310,8 @@ def score_catalizador(conn, empresa_id: int) -> int:
             where empresa_id = %s
               and revenue is not null and revenue > 0
               and gross_profit is not null
-            order by anio_fiscal, trimestre
+              and fecha_fin is not null
+            order by fecha_fin
             """,
             (empresa_id,)
         )
@@ -311,7 +327,7 @@ def score_catalizador(conn, empresa_id: int) -> int:
             puntos += 5
 
     # Señal 2: caja operativa virando hacia positivo
-    fcf = [v for _, _, v in _serie_trimestral(conn, empresa_id, "operating_cash_flow")]
+    fcf = [v for _, v in _serie_trimestral(conn, empresa_id, "operating_cash_flow")]
     if len(fcf) >= 4:
         fcf = fcf[-4:]
         # ¿Los trimestres recientes son mejores que los antiguos?

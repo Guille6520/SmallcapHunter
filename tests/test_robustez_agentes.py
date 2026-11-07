@@ -19,6 +19,7 @@ import pytest
 import auditor
 import detective
 import grafo_capa3
+import verificaciones
 from errores_llm import describir_veredicto_invalido, normalizar_veredicto
 
 
@@ -194,7 +195,7 @@ def _preparar_auditor(monkeypatch, analisis, respuestas):
         "empresa_id": 7, "ticker": "FAKE", "nombre": "Fake Inc", "transacciones": []})
     monkeypatch.setattr(auditor, "obtener_analisis_detective", lambda conn, eid, m=None: analisis)
     monkeypatch.setattr(auditor, "ya_auditado_por", lambda conn, did, m: False)
-    monkeypatch.setattr(auditor, "construir_prompt_auditor", lambda ctx, resp: "prompt")
+    monkeypatch.setattr(auditor, "construir_prompt_auditor", lambda ctx, resp, sospechosas: "prompt")
     monkeypatch.setattr(auditor, "llamar_modelo", llamar)
     monkeypatch.setattr(auditor, "texto_fuente_citas", lambda ctx: "texto")
     monkeypatch.setattr(auditor, "verificar_citas", lambda *a, **k: {
@@ -203,9 +204,9 @@ def _preparar_auditor(monkeypatch, analisis, respuestas):
     return registradas
 
 
-def _auditoria(veredicto="EMPEORA_X"):
-    return json.dumps({"veredicto_auditor": "NADA_INTERESANTE", "relacion_con_veredicto_detective": "EMPEORA",
-                       "citas_nuevas": []})
+def _auditoria():
+    return json.dumps({"afirmaciones": [{"afirmacion": "los ingresos subieron", "estado": "SIN_RESPALDO", "cita_literal": ""}],
+                       "cifras": [], "riesgos_omitidos": []})
 
 
 def test_si_la_segunda_auditoria_falla_se_conserva_la_primera(monkeypatch):
@@ -217,7 +218,7 @@ def test_si_la_segunda_auditoria_falla_se_conserva_la_primera(monkeypatch):
     resultados = auditor.ejecutar_auditor(object(), "FAKE")
 
     assert len(resultados) == 1, "la auditoría ya pagada no se pierde porque la siguiente falle"
-    assert resultados[0]["respuesta_llm"]["detective_auditoria_id"] == 1
+    assert resultados[0]["detective_auditoria_id"] == 1
     assert [r["exito"] for r in registradas] == [True, False]
 
 
@@ -229,32 +230,52 @@ def test_si_la_primera_auditoria_falla_la_segunda_se_hace_igual(monkeypatch):
 
     resultados = auditor.ejecutar_auditor(object(), "FAKE")
 
-    assert len(resultados) == 1 and resultados[0]["respuesta_llm"]["detective_auditoria_id"] == 2
+    assert len(resultados) == 1 and resultados[0]["detective_auditoria_id"] == 2
 
 
-def test_auditoria_sin_veredicto_valido_se_descarta_sin_inventar_uno(monkeypatch):
-    registradas = _preparar_auditor(
-        monkeypatch, [_analisis(1, "claude")],
-        [json.dumps({"relacion_con_veredicto_detective": "CONFIRMA", "citas_nuevas": []})],
-    )
+@pytest.mark.parametrize("respuesta", [
+    {"cifras": [], "riesgos_omitidos": []},                       # sin la lista de afirmaciones
+    {"afirmaciones": [], "cifras": [], "riesgos_omitidos": []},   # vacía: no hay nada que comprobar
+    {"afirmaciones": "todo bien"},                                 # no es una lista
+    ["afirmaciones"],                                              # ni siquiera es un objeto
+])
+def test_auditoria_sin_afirmaciones_que_comprobar_se_descarta_en_vez_de_verificarla(monkeypatch, respuesta):
+    """Un sello VERIFICADO dado a una auditoría vacía sería mentira."""
+    registradas = _preparar_auditor(monkeypatch, [_analisis(1, "claude")], [json.dumps(respuesta)])
 
     assert auditor.ejecutar_auditor(object(), "FAKE") == []
-    assert registradas[0]["exito"] is False and registradas[0]["tipo_error"].startswith("veredicto_invalido")
+    assert registradas[0]["exito"] is False and registradas[0]["tipo_error"].startswith("json_invalido")
+
+
+def test_el_resultado_de_una_auditoria_lleva_sello_y_no_veredicto(monkeypatch):
+    _preparar_auditor(monkeypatch, [_analisis(1, "claude")], [_auditoria()])
+
+    (r,) = auditor.ejecutar_auditor(object(), "FAKE")
+
+    assert r["sello"] == "VERIFICADO" and r["modelo_auditor"] == "gemini" and r["modelo_detective"] == "claude"
+    assert "veredicto_final" not in r and "veredicto_auditor" not in r["respuesta_llm"]
+    assert r["respuesta_llm"]["version_auditor"] == 2
+
+
+def _resultado_auditor():
+    return {
+        "empresa_id": 7, "ticker": "FAKE", "nombre": "Fake Inc", "modelo_auditor": "gemini",
+        "modelo_detective": "claude", "detective_auditoria_id": 1, "sello": "CON_AVISOS",
+        "resumen": {"n_avisos": 2}, "respuesta_llm": {},
+        "verificacion_citas": {"citas_soportadas": 1, "citas_totales": 1},
+    }
 
 
 def test_guardar_auditor_devuelve_false_si_falla_y_true_si_no(monkeypatch):
     avisos = []
     monkeypatch.setattr(auditor, "notificar_analisis", lambda **kw: avisos.append(kw))
-    resultado = {
-        "empresa_id": 7, "ticker": "FAKE", "nombre": "Fake Inc", "modelo_auditor": "gemini",
-        "veredicto_final": "INTERESANTE", "respuesta_llm": {"relacion_con_veredicto_detective": "CONFIRMA"},
-        "verificacion_citas": {"citas_soportadas": 1, "citas_totales": 1},
-    }
+    monkeypatch.setattr(verificaciones, "_esquema_listo", True)
 
-    assert auditor.guardar_resultado_auditor(_Conn(falla=True), resultado) is False
+    assert auditor.guardar_resultado_auditor(_Conn(falla=True), _resultado_auditor()) is False
     assert avisos == []
-    assert auditor.guardar_resultado_auditor(_Conn(), resultado) is True
+    assert auditor.guardar_resultado_auditor(_Conn(), _resultado_auditor()) is True
     assert len(avisos) == 1
+    assert avisos[0]["veredicto"] == "CON_AVISOS" and avisos[0]["etiqueta"] == "Sello"
 
 
 def test_un_fallo_de_telegram_no_invalida_la_auditoria_guardada(monkeypatch):
@@ -262,10 +283,8 @@ def test_un_fallo_de_telegram_no_invalida_la_auditoria_guardada(monkeypatch):
         raise RuntimeError("Telegram caído")
 
     monkeypatch.setattr(auditor, "notificar_analisis", telegram_caido)
-    resultado = {
-        "empresa_id": 7, "ticker": "FAKE", "nombre": "Fake Inc", "modelo_auditor": "gemini",
-        "veredicto_final": "INTERESANTE", "respuesta_llm": {}, "verificacion_citas": {"citas_soportadas": 0, "citas_totales": 0},
-    }
+    monkeypatch.setattr(verificaciones, "_esquema_listo", True)
+    resultado = _resultado_auditor()
     conn = _Conn()
 
     assert auditor.guardar_resultado_auditor(conn, resultado) is True
@@ -289,6 +308,7 @@ def test_el_grafo_no_da_por_hecho_un_detective_que_no_se_guardo(monkeypatch):
 
 
 def test_el_grafo_solo_cuenta_las_auditorias_que_se_guardaron(monkeypatch):
+    monkeypatch.setattr(grafo_capa3, "auditor_activo", lambda conn: True)
     monkeypatch.setattr(detective, "conectar_db", lambda: _Conn())
     monkeypatch.setattr(detective, "ejecutar_detective", lambda conn, t, m: _resultado_detective() | {
         "contexto": {"empresa_id": 7, "ticker": "FAKE", "nombre": "Fake Inc"}})

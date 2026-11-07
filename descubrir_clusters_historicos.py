@@ -3,11 +3,12 @@ descubrir_clusters_historicos.py — busco, sobre TODO el histórico de
 TODAS las empresas, cuáles tuvieron alguna vez un cluster real de
 insiders (3+ personas distintas comprando en una ventana compacta).
 
-Esto es un script de solo lectura — no toca ninguna tabla, no modifica
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano.
+Es de solo lectura — no toca ninguna tabla, no modifica
 nada del pipeline en producción. Existe para validar la hipótesis del
 proyecto contra casos reales: ¿hay empresas en mis propios datos que
 mostraron la señal exacta que definí, y que después se convirtieron
-en large caps? Es la pregunta que me hizo Guille y que no puedo
+en large caps? Es la pregunta que me hice y que no puedo
 responder adivinando tickers de memoria uno a uno.
 
 Reutilizo detectar_cluster_buying() de filtro_capa1.py en vez de

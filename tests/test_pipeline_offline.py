@@ -156,32 +156,102 @@ def test_score_precio():
     assert score_precio(None) == 0, "sin dato -> 0"
 
 
+def _cierres(anio, trimestre, n):
+    """n fechas de cierre de trimestre seguidas, desde el trimestre calendario dado."""
+    fechas, a, t = [], anio, trimestre
+    for _ in range(n):
+        mes = t * 3
+        dia = 31 if mes in (3, 12) else 30
+        fechas.append(date(a, mes, dia))
+        a, t = (a + 1, 1) if t == 4 else (a, t + 1)
+    return fechas
+
+
+def _serie(valores, anio=2024, trimestre=1):
+    """Serie [(fecha_de_cierre, valor)] con un cierre por trimestre, sin huecos."""
+    return list(zip(_cierres(anio, trimestre, len(valores)), valores))
+
+
 def test_score_temporal():
     from scorer_capa2 import score_temporal
 
     # Serie que ACELERA (la del ejemplo de la documentacion)
-    serie_acelera = [(2024, 1, 100), (2024, 2, 105), (2024, 3, 116), (2024, 4, 135),
-                      (2025, 1, 170), (2025, 2, 230)]
+    serie_acelera = _serie([100, 105, 116, 135, 170, 230])
     st_ = score_temporal(_FakeConn([serie_acelera]), 1)
     assert st_ >= 8, f"serie que acelera puntua alto (>=8) -> {st_}"
 
     # Crecimiento lineal en valor absoluto = tasa que DESACELERA: puntua poco
-    serie_lineal = [(2024, 1, 100), (2024, 2, 110), (2024, 3, 120), (2024, 4, 130),
-                     (2025, 1, 140), (2025, 2, 150)]
+    serie_lineal = _serie([100, 110, 120, 130, 140, 150])
     st_lineal = score_temporal(_FakeConn([serie_lineal]), 1)
     assert st_lineal <= 4, f"crecimiento lineal puntua bajo (<=4) -> {st_lineal}"
 
-    # Hueco de trimestres: 2023Q4 -> 2024Q3 no son adyacentes, ese par se salta
-    serie_hueco = [(2023, 3, 100), (2023, 4, 500), (2024, 3, 120), (2024, 4, 130), (2025, 1, 140)]
-    st_hueco = score_temporal(_FakeConn([serie_hueco]), 1)
-    assert isinstance(st_hueco, int), "trimestres no adyacentes no generan tasa QoQ falsa"
+
+def test_un_hueco_de_trimestres_no_genera_una_tasa_trimestral_falsa():
+    """Antes el test solo comprobaba que el resultado fuera un entero. Aqui el hueco (falta un trimestre
+    entre 2024Q1 y 2024Q3) esconde un salto de 120 a 400. Si el par se empalmara, ese salto contaria como
+    la tasa de UN trimestre y la serie parecería acelerar (puntuaria 10); saltandolo, lo que queda es
+    crecimiento que se frena (puntua bajo)."""
+    from scorer_capa2 import score_temporal
+
+    cierres = _cierres(2023, 3, 3) + _cierres(2024, 3, 3)           # 2023Q3, Q4, 2024Q1  ... hueco ...  2024Q3, Q4, 2025Q1
+    con_hueco = list(zip(cierres, [100, 110, 120, 400, 410, 420]))
+
+    assert score_temporal(_FakeConn([con_hueco]), 1) <= 4,         "el salto 120 -> 400 cae en el hueco: no puede contarse como una tasa trimestral"
+
+
+def test_trimestres_con_etiquetas_de_ano_engañosas_pero_cierres_lejanos_no_se_empalman():
+    """El caso real de BFS, TGEN, KLTR y otras 75 empresas: el cierre del 30-jun-2024 figuraba como
+    '2025 Q2' y el del 30-sep-2025 como '2025 Q3', es decir, 'consecutivos' con 457 dias entre
+    medias. El score decide la adyacencia con la fecha de cierre y no con la etiqueta, asi que esos
+    dos NO forman un par."""
+    from scorer_capa2 import _son_consecutivos, score_temporal
+
+    assert _son_consecutivos(date(2024, 6, 30), date(2024, 9, 30)) is True
+    assert _son_consecutivos(date(2024, 6, 30), date(2025, 9, 30)) is False, "15 meses no es un trimestre"
+    assert _son_consecutivos(date(2025, 3, 31), date(2025, 6, 30)) is True
+    # los calendarios de 52/53 semanas mueven el cierre unos dias
+    assert _son_consecutivos(date(2024, 12, 28), date(2025, 3, 29)) is True
+    assert _son_consecutivos(date(2024, 12, 28), date(2025, 6, 28)) is False, "dos trimestres de distancia"
+
+    # Solo 3 pares seguidos de verdad (2024Q3->Q4, Q4->2025Q1, 2025Q1->Q2): la serie con el salto de 15
+    # meses en medio tiene 3 tasas validas, no 4, y el salto 120 -> 600 no cuenta.
+    f = [date(2024, 3, 31), date(2024, 6, 30), date(2025, 9, 30), date(2025, 12, 31), date(2026, 3, 31), date(2026, 6, 30)]
+    serie = list(zip(f, [100, 110, 600, 610, 620, 630]))
+    assert score_temporal(_FakeConn([serie]), 1) <= 4, "el salto 110 -> 600 (15 meses) no puede contarse como crecimiento trimestral"
+
+
+def test_la_serie_se_pide_ordenada_por_fecha_de_cierre_y_no_por_etiqueta():
+    """Las etiquetas de ano/trimestre pueden estar desordenadas respecto a la fecha real."""
+    from scorer_capa2 import _serie_trimestral
+
+    consultas = []
+
+    class Cur:
+        def execute(self, sql, params=None):
+            consultas.append(sql)
+
+        def fetchall(self):
+            return []
+
+        def close(self):
+            pass
+
+    class Conn:
+        def cursor(self):
+            return Cur()
+
+    _serie_trimestral(Conn(), 1, "revenue")
+
+    sql = consultas[0]
+    assert "select fecha_fin, revenue" in sql and "order by fecha_fin" in sql
+    assert "anio_fiscal" not in sql and "trimestre" not in sql.replace("metricas_trimestrales", "")
 
 
 def test_score_catalizador():
     from scorer_capa2 import score_catalizador
 
     margenes = [(0.30,), (0.31,), (0.35,), (0.38,)]
-    fcf = [(2024, 1, -900), (2024, 2, -600), (2024, 3, -300), (2024, 4, -50)]
+    fcf = _serie([-900, -600, -300, -50])
     scat = score_catalizador(_FakeConn([margenes, fcf]), 1)
     assert scat == 10, f"margen y caja mejorando -> 10, dio {scat}"
 
@@ -286,15 +356,17 @@ def test_ingesta_10q_regex_mda():
         "un encabezado real (via patron principal) no se marca como mencion cruzada"
 
 
-# ---------- auditor.py: el prompt no debe sesgar hacia EMPEORA ----------
+# ---------- auditor.py: verifica, no da veredicto ----------
 
-def test_auditor_prompt_simetria():
+def test_auditor_prompt_no_pide_veredicto_ni_ve_el_del_detective():
     """
-    Historico real: 26/34 auditorias EMPEORAN al Detective y solo 1
-    MEJORA. La causa era que el prompt solo preguntaba por generosidad
-    excesiva y riesgos omitidos, nunca por fortalezas infravaloradas —
-    este test congela la correccion para que no se pierda en un
-    refactor futuro.
+    Historico real: el Auditor de la v1 declaro EMPEORA en 74 % de los casos (96 de 130;
+    su veredicto real fue mas bajo en 45 %), y en 24 de 24 al auditar sus propios
+    analisis (mas bajo en 16, igual en 8), y anadirle la tarea de
+    buscar fortalezas no lo arreglo: un LLM no da un juicio global estable sobre otro
+    analisis. Ahora solo comprueba afirmaciones contra el texto. Este test congela
+    que el prompt no vuelva a pedir un veredicto ni ensene el del Detective (que lo
+    ancla).
     """
     from auditor import construir_prompt_auditor
 
@@ -305,18 +377,17 @@ def test_auditor_prompt_simetria():
     }
     respuesta_detective_fake = {
         "catalizador_no_obvio": "x", "tesis_inversion": "y",
-        "riesgos": [], "veredicto_preliminar": "INTERESANTE",
+        "riesgos": [], "veredicto_preliminar": "MUY_INTERESANTE",
     }
-    prompt_auditor = construir_prompt_auditor(contexto_fake, respuesta_detective_fake)
+    prompt = construir_prompt_auditor(contexto_fake, respuesta_detective_fake,
+                                      [{"cifra": "34%", "contexto": "ingresos +34%"}])
 
-    assert "riesgo" in prompt_auditor.lower() and "no mencion" in prompt_auditor.lower(), \
-        "pregunta por riesgos omitidos (direccion EMPEORA)"
-    assert "fortaleza" in prompt_auditor.lower() or "infravalor" in prompt_auditor.lower(), \
-        "tambien pregunta por fortalezas infravaloradas (direccion MEJORA)"
-    assert '"fortalezas_omitidas_por_detective"' in prompt_auditor, \
-        "el JSON de salida tiene un campo simetrico para fortalezas"
-    assert "conservador" in prompt_auditor.lower(), \
-        "tambien admite que la interpretacion fuera demasiado conservadora"
+    assert "MUY_INTERESANTE" not in prompt and "veredicto" not in prompt.lower(), \
+        "ni pide un veredicto ni muestra el del Detective"
+    assert "NO emitas un juicio global" in prompt
+    assert "RESPALDADA" in prompt and "SIN_RESPALDO" in prompt and "CONTRADICHA" in prompt
+    assert "«34%»" in prompt, "le pasa las cifras que el codigo no ha encontrado"
+    assert "riesgos omitidos" in prompt.lower()
 
 
 # ---------- ingesta_8k.py: items y extraccion de secciones ----------

@@ -70,8 +70,9 @@ MIN_ANALISIS_PARA_CALIDAD = 3
 #    por la de carga: el upsert no la toca al recargar) y 130 días es un trimestre
 #    más el retraso normal; pasarse significa que se saltó uno entero.
 #  - Mercado: cada pasada actualiza un lote, y el servicio pasa cada 48 h.
-#  - 8-K y 13D/G: llegan cada semana para las ~460 empresas que sigo; 13D/G es
-#    más raro, de ahí el margen mayor.
+#  - 8-K y 13D/G: solo se ingieren para las candidatas que pasan el corte de Capa 2
+#    (unas decenas), y llegan cada semana entre todas; 13D/G es más raro, de ahí el
+#    margen mayor.
 #  - 10-Q: se mide por el fin de periodo del último trimestre; con el plazo de
 #    presentación (45 días) y un poco de margen salen unos 140 días.
 FUENTES_INGESTA = {

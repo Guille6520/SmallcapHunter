@@ -22,7 +22,7 @@ Quién usa este módulo:
     `auditor.py` por separado — así la pasada automática de 48h también
     corre sobre el grafo, no es una demo aislada.
   - api.py lo invoca en proceso (import directo) desde el endpoint
-    POST /analizar/{ticker}.
+    POST /candidatas/{ticker}/analizar.
   - Uso manual desde la terminal, para un ticker suelto:
       python grafo_capa3.py --ticker XXXX
       python grafo_capa3.py --ticker XXXX --modelos claude
@@ -37,6 +37,7 @@ from langgraph.graph import StateGraph, START, END
 
 import detective
 import auditor
+from interruptores import auditor_activo
 
 logging.basicConfig(
     level=logging.INFO,
@@ -113,6 +114,10 @@ def nodo_auditor(state: EstadoCapa3) -> dict:
     ejecutar_auditor tal cual, que ya sabe saltar lo que no tenga
     análisis previo guardado.
     """
+    if not auditor_activo(state["conn"]):
+        log.info(f"{state['ticker']}: el Auditor está apagado (configuracion.auditor_activo) — no audito")
+        return {"auditorias_guardadas": []}
+
     if state.get("fallo_claude") and state.get("fallo_gemini"):
         log.warning(f"{state['ticker']}: los dos Detectives fallaron — no hay nada que auditar")
         return {"auditorias_guardadas": []}

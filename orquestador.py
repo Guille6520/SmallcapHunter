@@ -2,9 +2,10 @@
 orquestador.py — el sistema completo corriendo solo, de la ingesta al
 Telegram, sin que nadie tenga que ir empresa por empresa.
 
-Filosofía: los scripts de ingesta e ingesta/scoring NO se tocan — el
-orquestador los ejecuta en el mismo orden que la guía de pruebas (es la
-misma secuencia que harías a mano). La única pieza que sí cambia es la
+Filosofía: los scripts de ingesta y de scoring NO se tocan — el
+orquestador los ejecuta como subprocesos, en el mismo orden en que los
+lanzarías a mano (carga de Form 4, mercado, Capa 1, Capa 2, 10-Q, 8-K y
+13D/G). La única pieza que sí cambia es la
 fase de agentes: desde que existe grafo_capa3.py, la pasada de 48h ya
 no encadena `detective.py` x2 + `auditor.py` como tres subprocesos
 sueltos — invoca el grafo de LangGraph una vez por ticker (ver
@@ -25,7 +26,12 @@ pago y no tiene tope de cuota, pero sí cuesta dinero por llamada): tope
 de empresas por pasada (max_analisis_por_pasada) y
 pausa entre análisis (pausa_llm_segundos), ambos en la tabla
 configuracion. Si una pasada deja empresas pendientes, caerán en la
-siguiente — el sistema es de 48h, no de tiempo real.
+siguiente — el sistema es de 48h, no de tiempo real. Además, la pasada se
+recorta a lo que cabe en la cuota gratuita de Gemini del día (cuota_gemini.py).
+
+Cada pasada empieza con una copia de seguridad de la base (si toca, backup_db.py),
+guarda la foto de cambios justo después de puntuar y termina con el seguimiento
+personal (solo si está activado), el contexto de sector y la revisión de alertas.
 
 Cómo usarlo:
   # Una pasada completa ahora mismo:
@@ -64,7 +70,9 @@ load_dotenv()
 
 from notificador_telegram import enviar_telegram
 import cuota_gemini
+from interruptores import auditor_encendido
 from verificador_citas import VERSION_PROTOCOLO
+from verificaciones import VERSION_AUDITOR, asegurar_esquema as asegurar_esquema_verificaciones
 
 logging.basicConfig(
     level=logging.INFO,
@@ -80,6 +88,11 @@ DB_CONFIG = {
     "user":     os.getenv("DB_USER", "postgres"),
     "password": os.getenv("DB_PASSWORD", ""),
 }
+
+# Carpeta del proyecto. Los pasos se lanzan por su nombre de archivo (relativo), así que
+# se ejecutan con esta carpeta como directorio de trabajo: si el orquestador se arranca
+# desde otro sitio (el programador de tareas de Windows, un servicio), no fallan todos.
+RAIZ_PROYECTO = os.path.dirname(os.path.abspath(__file__))
 
 # Con cuántos tickers de mercado se conforma una pasada normal. El
 # refresh completo de ~10.000 tickers a 0.6s/ticker son casi 2 horas —
@@ -130,7 +143,7 @@ def leer_configuracion_orquestador(conn) -> dict:
         cur.execute(
             "select clave, valor from configuracion where clave in "
             "('score_minimo_llm', 'max_analisis_por_pasada', "
-            "'pausa_llm_segundos', 'scheduler_horas', 'gemini_limite_diario')"
+            "'pausa_llm_segundos', 'scheduler_horas', 'gemini_limite_diario', 'auditor_activo')"
         )
         valores = dict(cur.fetchall())
         return {
@@ -140,6 +153,8 @@ def leer_configuracion_orquestador(conn) -> dict:
             "horas": int(valores.get("scheduler_horas", 48)),
             # 0 = sin límite (cuenta de Gemini con facturación)
             "gemini_limite": int(valores.get("gemini_limite_diario", cuota_gemini.LIMITE_DIARIO_POR_DEFECTO)),
+            # Encendido salvo que la tabla diga lo contrario: ver interruptores.py
+            "auditor_activo": auditor_encendido(valores.get("auditor_activo")),
         }
     finally:
         cur.close()
@@ -157,7 +172,7 @@ def ejecutar_paso(nombre: str, argumentos: list, critico: bool) -> bool:
     inicio = time.time()
 
     try:
-        codigo = subprocess.run(comando, timeout=TIMEOUT_PASO_SEGUNDOS).returncode
+        codigo = subprocess.run(comando, timeout=TIMEOUT_PASO_SEGUNDOS, cwd=RAIZ_PROYECTO).returncode
     except subprocess.TimeoutExpired:
         log.error(f">>> {nombre}: pasó de {TIMEOUT_PASO_SEGUNDOS // 3600} h sin terminar — lo mato")
         codigo = "timeout"
@@ -195,7 +210,8 @@ def ejecutar_grafo_paso(ticker: str, modelos: list) -> dict:
     inicio = time.time()
 
     try:
-        resultado = subprocess.run(comando, capture_output=True, text=True, timeout=TIMEOUT_GRAFO_SEGUNDOS)
+        resultado = subprocess.run(comando, capture_output=True, text=True, timeout=TIMEOUT_GRAFO_SEGUNDOS,
+                                   cwd=RAIZ_PROYECTO)
     except subprocess.TimeoutExpired:
         # Mismo tratamiento que un fallo del grafo: asumo que no salió ningún modelo
         # y la pasada sigue con la siguiente empresa en vez de quedarse colgada.
@@ -375,11 +391,12 @@ def auditorias_pendientes(conn, corte: int, limite: int) -> list:
             join ultimos u on u.empresa_id = c.id
             where u.version >= %s
               and not exists (
-                      select 1 from auditorias au
-                      where au.modelo_llm = case u.modelo_llm
-                                              when 'claude' then 'gemini'
-                                              else 'claude' end
-                        and au.respuesta_llm->>'detective_auditoria_id' = u.id::text
+                      select 1 from verificaciones v
+                      where v.detective_auditoria_id = u.id
+                        and v.modelo_auditor = case u.modelo_llm
+                                                 when 'claude' then 'gemini'
+                                                 else 'claude' end
+                        and v.version_auditor = %s
                   )
               and (select count(*) from llm_calls l
                    where l.origen = 'auditor' and not l.exito
@@ -388,7 +405,7 @@ def auditorias_pendientes(conn, corte: int, limite: int) -> list:
                      and l.fecha > now() - interval '7 days') < %s
             order by c.score desc, c.id, u.modelo_llm
             """,
-            (corte, VERSION_PROTOCOLO, MAX_FALLOS_AUDITORIA_7D),
+            (corte, VERSION_PROTOCOLO, VERSION_AUDITOR, MAX_FALLOS_AUDITORIA_7D),
         )
         filas = cur.fetchall()
     finally:
@@ -427,8 +444,13 @@ def fase_auditorias(config: dict) -> dict:
     seguidas, paro la fase: lo normal es cuota agotada o proveedor caído,
     y seguir solo repetiría el mismo error.
     """
+    if not config.get("auditor_activo"):
+        log.info("Fase de auditorías: el Auditor está apagado (configuracion.auditor_activo) — nada que hacer")
+        return {"auditadas": 0, "fallos": 0}
+
     conn = conectar_db()
     try:
+        asegurar_esquema_verificaciones(conn)
         pendientes = auditorias_pendientes(conn, config["corte"], config["max_analisis"])
         pendientes, aplazadas = recortar_por_cuota_gemini(
             conn, pendientes, config.get("gemini_limite", 0),
@@ -484,7 +506,7 @@ def fase_agentes(config: dict) -> dict:
         )
         pendientes, aplazadas = recortar_por_cuota_gemini(
             conn, pendientes, config.get("gemini_limite", 0),
-            lambda p: cuota_gemini.llamadas_gemini_de_una_empresa(p[3]),
+            lambda p: cuota_gemini.llamadas_gemini_de_una_empresa(p[3], config.get("auditor_activo", True)),
         )
     finally:
         conn.close()
@@ -594,6 +616,24 @@ def fase_contexto_sector() -> dict:
     return fase_sectores()
 
 
+def fase_backup() -> bool:
+    """Copia de seguridad de la base antes de tocar nada (ver backup_db.py). Si falla,
+    la pasada sigue, pero queda anotado para que el aviso de alertas lo cuente."""
+    from backup_db import fase_backup as copiar
+    ok = copiar()
+    if not ok:
+        PASOS_FALLIDOS.append("Copia de seguridad")
+    return ok
+
+
+def fase_cambios() -> dict:
+    """Guarda la foto de las candidatas de esta pasada (cambios.py), para poder
+    enseñar después quién entró, quién salió y a quién le cambió el score. Es
+    información para el dashboard: no es crítica."""
+    from cambios import fase_cambios as guardar
+    return guardar()
+
+
 def fase_alertas(pasos_fallidos: list = None) -> list:
     """Revisión final de la pasada: errores por modelo, cuota de Gemini, gasto
     y calidad de citas (ver alertas.py). Va al final, cuando ya hay datos de
@@ -614,6 +654,7 @@ def una_pasada(args) -> None:
     inicio = datetime.now()
     anio = inicio.year
     PASOS_FALLIDOS.clear()
+    fase_backup()
 
     conn = conectar_db()
     try:
@@ -649,6 +690,7 @@ def una_pasada(args) -> None:
                 enviar_telegram(f"⚠️ SmallCap Hunter: la pasada se abortó en «{nombre}» (paso crítico). "
                                 f"Mira el log del orquestador.")
                 return
+        fase_cambios()
 
     resultado = fase_agentes(config)
     auditorias = fase_auditorias(config)

@@ -108,13 +108,14 @@ def test_los_prompts_piden_cita_en_idioma_original_y_traduccion_aparte():
         "texto_mda": "Revenue grew.", "eventos_8k": [], "activistas": [], "senales_mercado": None,
     }
     prompt_detective = construir_prompt(contexto)
-    prompt_auditor = construir_prompt_auditor(contexto, {"veredicto_preliminar": "INTERESANTE"})
+    prompt_auditor = construir_prompt_auditor(contexto, {"tesis_inversion": "x"}, [])
 
     for prompt in (prompt_detective, prompt_auditor):
-        assert '"cita_es"' in prompt, "la traducción va en su propio campo"
         assert "NO lo traduzcas" in prompt, "la cita literal va en el idioma del documento"
         assert 'salvo el campo "cita_literal"' in prompt, \
             "el 'en español' del JSON ya no cubre la cita literal"
+    # El Detective da la traducción aparte; el Auditor no la necesita (solo verifica contra el original)
+    assert '"cita_es"' in prompt_detective, "la traducción va en su propio campo"
     assert "No cites los SCORES" in prompt_detective
 
 

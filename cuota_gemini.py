@@ -82,12 +82,13 @@ def renovacion(conn):
         cur.close()
 
 
-def llamadas_gemini_de_una_empresa(modelos_pendientes: list) -> int:
+def llamadas_gemini_de_una_empresa(modelos_pendientes: list, con_auditor: bool = True) -> int:
     """Lo que va a gastar de cuota analizar una empresa con el grafo: su
     Detective de Gemini si le toca, y la auditoría de Gemini sobre el
     análisis de Claude (que existirá al terminar el Detective de Claude, o
-    ya existe). La auditoría de Claude sobre Gemini no gasta cuota de Gemini."""
-    return (1 if "gemini" in modelos_pendientes else 0) + 1
+    ya existe). La auditoría de Claude sobre Gemini no gasta cuota de Gemini.
+    Con el Auditor apagado (interruptores.py) solo cuenta el Detective."""
+    return (1 if "gemini" in modelos_pendientes else 0) + (1 if con_auditor else 0)
 
 
 def llamadas_gemini_de_una_auditoria(modelos_detective: list) -> int:

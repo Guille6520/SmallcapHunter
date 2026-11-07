@@ -3,6 +3,9 @@ validacion_historica.py — reconstruyo el market cap REAL que tenía
 cada empresa en el momento exacto en que detecté un cluster de
 insiders, en vez de usar el market cap de HOY.
 
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano y produce
+validadas_historicas.csv, que usan los demás scripts de validación y backtest.
+
 Esto corrige el problema que vimos en descubrir_clusters_historicos.py:
 esa lista mezclaba empresas que YA eran gigantes cuando ocurrió el
 cluster (McDonald's, Qualcomm, Mondelez...) con empresas que de verdad

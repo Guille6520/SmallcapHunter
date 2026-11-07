@@ -185,6 +185,8 @@ def test_la_pasada_empieza_sin_fallos_heredados_y_los_pasa_a_las_alertas(monkeyp
         return True
 
     monkeypatch.setattr(orquestador, "conectar_db", lambda: Conn())
+    monkeypatch.setattr(orquestador, "fase_backup", lambda: True)   # no copiar la base de verdad
+    monkeypatch.setattr(orquestador, "fase_cambios", lambda: {})
     monkeypatch.setattr(orquestador, "ejecutar_paso", paso)
     monkeypatch.setattr(orquestador, "fase_agentes", lambda c: {"analizadas": 0, "fallos": 0})
     monkeypatch.setattr(orquestador, "fase_auditorias", lambda c: {"auditadas": 0})

@@ -11,8 +11,9 @@ import grafo_capa3
 import orquestador
 import detective
 from verificador_citas import VERSION_PROTOCOLO
+from verificaciones import VERSION_AUDITOR
 
-CONFIG = {"corte": 25, "max_analisis": 10, "pausa_llm": 0}
+CONFIG = {"corte": 25, "max_analisis": 10, "pausa_llm": 0, "auditor_activo": True}
 
 
 class _Cursor:
@@ -37,6 +38,12 @@ class _Conn:
     def cursor(self):
         return self.cur
 
+    def commit(self):
+        pass
+
+    def rollback(self):
+        pass
+
     def close(self):
         pass
 
@@ -58,7 +65,9 @@ def test_auditorias_pendientes_solo_protocolo_vigente_y_con_tope_de_fallos():
     orquestador.auditorias_pendientes(conn, corte=25, limite=10)
 
     sql, params = conn.cur.ejecutadas[0]
-    assert params == (25, VERSION_PROTOCOLO, orquestador.MAX_FALLOS_AUDITORIA_7D)
+    assert params == (25, VERSION_PROTOCOLO, VERSION_AUDITOR, orquestador.MAX_FALLOS_AUDITORIA_7D)
+    assert "from verificaciones" in sql and "v.version_auditor =" in sql, \
+        "un análisis está sin auditar si no tiene el sello de la versión actual del Auditor; las auditorías de la v1 no cuentan"
     assert "u.version >=" in sql, "no auditar análisis que la próxima pasada va a rehacer"
     assert "respuesta_llm ? 'veredicto_preliminar'" in sql, "solo filas de Detective, no de Auditor"
     assert "origen = 'auditor'" in sql and "not l.exito" in sql
@@ -181,6 +190,7 @@ def test_modelos_vacio_ejecuta_solo_el_auditor(monkeypatch):
         return []
 
     monkeypatch.setattr(auditor, "ejecutar_auditor", fake_auditor)
+    monkeypatch.setattr(grafo_capa3, "auditor_activo", lambda conn: True)
 
     grafo_capa3.ejecutar_grafo_capa3(conn=object(), ticker="FAKE", modelos_a_ejecutar=[])
 

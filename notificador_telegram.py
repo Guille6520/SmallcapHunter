@@ -42,6 +42,8 @@ EMOJI_VEREDICTO = {
     # Los nombres antiguos, por si quedan filas viejas sin migrar
     "SEGURO": "\U0001F7E2", "DUDOSO": "\U0001F7E1",
     "HUMO": "\U0001F534", "DESCARTADO_POR_ALUCINACION": "\U0001F6AB",
+    # Los sellos del Auditor (no son veredictos: dicen si el análisis se sostiene)
+    "VERIFICADO": "✅", "CON_AVISOS": "⚠️",
 }
 
 
@@ -82,7 +84,8 @@ def enviar_telegram(texto: str) -> bool:
 
 def notificar_analisis(agente: str, ticker: str, nombre: str, modelo: str,
                        veredicto: str, citas_verificadas: int = None,
-                       citas_totales: int = None, extra: str = None) -> bool:
+                       citas_totales: int = None, extra: str = None,
+                       etiqueta: str = "Veredicto") -> bool:
     """
     Formatea y envía el aviso estándar de "acabo de analizar una empresa".
     Lo llaman detective.py y auditor.py justo después de guardar el
@@ -101,7 +104,7 @@ def notificar_analisis(agente: str, ticker: str, nombre: str, modelo: str,
     lineas = [
         f"{emoji} <b>{esc(ticker)}</b> — {esc(nombre or 'sin nombre')}",
         f"Agente: {esc(agente)} ({esc(modelo)})",
-        f"Veredicto: <b>{esc(veredicto)}</b>",
+        f"{esc(etiqueta)}: <b>{esc(veredicto)}</b>",
     ]
     if citas_totales:
         lineas.append(f"Citas verificadas: {citas_verificadas}/{citas_totales}")

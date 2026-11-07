@@ -52,6 +52,26 @@ def test_un_grafo_colgado_cuenta_como_fallo_de_todos_los_modelos_pedidos(monkeyp
     assert r["claude"] is False and r["gemini"] is False and r["auditorias_guardadas"] == 0
 
 
+def test_los_pasos_se_lanzan_desde_la_carpeta_del_proyecto(monkeypatch):
+    """Los pasos se piden por nombre relativo ("mercado_yfinance.py"): si el orquestador se
+    arranca desde otra carpeta, tienen que ejecutarse igualmente donde están los scripts."""
+    import os
+    visto = []
+
+    def falso(comando, timeout=None, cwd=None, **kw):
+        visto.append(cwd)
+        return subprocess.CompletedProcess(comando, 0, stdout="RESULTADO_JSON: {}", stderr="")
+
+    monkeypatch.setattr(orquestador.subprocess, "run", falso)
+
+    assert orquestador.ejecutar_paso("Mercado", ["mercado_yfinance.py"], critico=False) is True
+    orquestador.ejecutar_grafo_paso("FAKE", ["claude"])
+
+    assert visto == [orquestador.RAIZ_PROYECTO, orquestador.RAIZ_PROYECTO]
+    assert os.path.isfile(os.path.join(orquestador.RAIZ_PROYECTO, "mercado_yfinance.py"))
+    assert os.path.isfile(os.path.join(orquestador.RAIZ_PROYECTO, "grafo_capa3.py"))
+
+
 def test_los_tiempos_maximos_son_holgados_pero_finitos():
     assert 3600 <= orquestador.TIMEOUT_PASO_SEGUNDOS <= 12 * 3600
     assert 300 <= orquestador.TIMEOUT_GRAFO_SEGUNDOS <= 3600
@@ -61,6 +81,7 @@ def test_los_tiempos_maximos_son_holgados_pero_finitos():
 
 def test_un_paso_critico_que_falla_avisa_por_telegram(monkeypatch):
     avisos = []
+    monkeypatch.setattr(orquestador, "fase_backup", lambda: True)   # no copiar la base de verdad
     monkeypatch.setattr(orquestador, "conectar_db", lambda: _ConexionConfig())
     monkeypatch.setattr(orquestador, "ejecutar_paso", lambda nombre, args, critico: not critico)
     monkeypatch.setattr(orquestador, "enviar_telegram", lambda texto: avisos.append(texto))

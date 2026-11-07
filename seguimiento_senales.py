@@ -35,8 +35,8 @@ Cómo se mide (y los límites):
 Cómo usarlo:
   python seguimiento_senales.py --actualizar   # baja los precios nuevos
   python seguimiento_senales.py                # imprime la cartera
-El orquestador baja los precios al final de cada pasada y el dashboard lo enseña
-en la pestaña Seguimiento.
+Si está activado, el orquestador baja los precios al final de cada pasada y el
+dashboard lo enseña en la vista Seguimiento; si no, ninguno de los dos hace nada.
 """
 
 import os
@@ -150,6 +150,43 @@ def seguimiento_de_una_senal(fecha_senal: date, precios: list, bench: list = Non
         punto = next((e for d, e in curva_exceso if d == dias), None)
         resultado[f"exceso_{nombre}"] = punto
     return resultado
+
+
+# Diferencia (en puntos de retorno) a partir de la cual digo que una empresa va mejor
+# o peor que su sector en vez de «igual»: por debajo es ruido, sobre todo en small caps.
+UMBRAL_FRENTE_AL_SECTOR = 0.05
+
+
+def frente_al_sector(fecha_senal: date, precios: list, serie_sector: list, serie_bench: list = None):
+    """
+    La empresa frente al ETF de su sector (y al IWM) desde el día del análisis, en el
+    mismo periodo exacto. Responde a una pregunta concreta: si la acción sube, ¿es la
+    empresa o es que sube todo su sector? Reutiliza seguimiento_de_una_senal con el ETF
+    como referencia. None si no hay precio de la empresa o del ETF en esas fechas.
+    """
+    vs_sector = seguimiento_de_una_senal(fecha_senal, precios, serie_sector)
+    if vs_sector is None or vs_sector["exceso"] is None:
+        return None
+    vs_iwm = seguimiento_de_una_senal(fecha_senal, precios, serie_bench) if serie_bench else None
+    return {
+        "retorno": vs_sector["retorno"],
+        "retorno_sector": vs_sector["retorno_bench"],
+        "exceso_sector": vs_sector["exceso"],
+        "retorno_iwm": vs_iwm["retorno_bench"] if vs_iwm else None,
+        "exceso_iwm": vs_iwm["exceso"] if vs_iwm else None,
+        "dias": vs_sector["dias_calendario"],
+    }
+
+
+def lectura_frente_al_sector(exceso_sector, umbral: float = UMBRAL_FRENTE_AL_SECTOR) -> str:
+    """Una palabra para la tabla. Describe el pasado reciente, no predice nada."""
+    if exceso_sector is None:
+        return "—"
+    if exceso_sector > umbral:
+        return "mejor que su sector"
+    if exceso_sector < -umbral:
+        return "peor que su sector"
+    return "con su sector"
 
 
 def primeras_senales(senales: list, veredicto: str = "MUY_INTERESANTE",
@@ -379,6 +416,52 @@ def actualizar_precios(conn, senales: list) -> dict:
     return {"actualizados": actualizados, "sin_datos": sin_datos}
 
 
+def _etf_por_empresa(conn, empresa_ids) -> dict:
+    """empresa_id -> (clave de sector, ETF) según su código SIC (ver sectores.py)."""
+    from sectores import sector_de_sic, etf_de_sector
+    cur = conn.cursor()
+    try:
+        cur.execute("select id, sic from empresas where id = any(%s)", (list(empresa_ids),))
+        return {i: (sector_de_sic(sic), etf_de_sector(sector_de_sic(sic))) for i, sic in cur.fetchall()}
+    finally:
+        cur.close()
+
+
+def _precios_de_sectores(conn, etfs) -> dict:
+    """Cierres de los ETFs de sector (los baja contexto_sector.py). Si esa tabla aún no
+    existe, la comparación con el sector simplemente no sale; no rompe el seguimiento."""
+    if not etfs:
+        return {}
+    cur = conn.cursor()
+    try:
+        cur.execute("select ticker, fecha, cierre from sector_precios where ticker = any(%s) order by ticker, fecha",
+                    (list(etfs),))
+        series = {}
+        for ticker, fecha, cierre in cur.fetchall():
+            series.setdefault(ticker, []).append((fecha, float(cierre)))
+        return series
+    except Exception:
+        conn.rollback()
+        return {}
+    finally:
+        cur.close()
+
+
+def comparar_con_sectores(conn, cartera: list, precios: dict, bench: list) -> None:
+    """Añade a cada empresa de la cartera «sector», «etf» y «vs_sector» (o None si no
+    hay ETF o precios). Modifica la lista en su sitio."""
+    if not cartera:
+        return
+    etf_de = _etf_por_empresa(conn, {c["empresa_id"] for c in cartera})
+    series = _precios_de_sectores(conn, {etf for _, etf in etf_de.values() if etf})
+    for c in cartera:
+        sector, etf = etf_de.get(c["empresa_id"], ("otros", None))
+        c["sector"], c["etf"] = sector, etf
+        serie_etf = series.get(etf) if etf else None
+        c["vs_sector"] = (frente_al_sector(c["fecha"], precios.get(c["ticker"], []), serie_etf, bench)
+                          if serie_etf else None)
+
+
 def cargar_seguimiento(conn) -> dict:
     """Todo lo que necesita el dashboard o el resumen, de una vez."""
     asegurar_esquema(conn)
@@ -389,6 +472,7 @@ def cargar_seguimiento(conn) -> dict:
     cartera, sin_precios, sin_referencia = seguimiento_de_todas(primeras_senales(senales), precios)
     for c in cartera:
         c["nombre"] = next((s["nombre"] for s in senales if s["empresa_id"] == c["empresa_id"]), None)
+    comparar_con_sectores(conn, cartera, precios, precios.get(BENCHMARK, []))
     por_senal = seguimiento_de_todas(senales, precios)[0]
     consenso = seguimiento_de_todas(senales_de_consenso(senales), precios)[0]
     hasta = max((serie[-1][0] for serie in precios.values() if serie), default=None)

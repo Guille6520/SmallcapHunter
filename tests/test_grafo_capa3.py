@@ -27,6 +27,9 @@ class _ConexionFalsa:
 @pytest.fixture(autouse=True)
 def conectar_db_falsa(monkeypatch):
     monkeypatch.setattr(detective, "conectar_db", lambda: _ConexionFalsa())
+    # El Auditor se puede apagar (interruptores.py): aquí se prueba el
+    # grafo con él encendido, y el caso apagado en tests/test_interruptores.py.
+    monkeypatch.setattr(grafo_capa3, "auditor_activo", lambda conn: True)
 
 
 def _resultado_detective_falso(empresa_id=1):

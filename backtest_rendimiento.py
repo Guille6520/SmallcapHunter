@@ -2,6 +2,10 @@
 backtest_rendimiento.py — mido si la señal de cluster de insiders
 batió al mercado en los 12 y 24 meses siguientes a cada detección.
 
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano y solo
+lee; el orquestador y el dashboard no lo usan. Sus límites (muestra pequeña,
+sesgo de supervivencia) están en el README.
+
 Esto responde a la pregunta final de la hipótesis del proyecto:
 ¿las empresas que mostraron el patrón realmente subieron más que el
 conjunto de small caps, o el patrón no predice nada?

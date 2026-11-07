@@ -3,6 +3,9 @@ validacion_recall_ganadoras.py — el test del recall: de las empresas
 que SÍ multiplicaron desde small cap dentro de mi ventana de datos,
 ¿cuántas mostraron mi señal (cluster de insiders) ANTES de subir?
 
+SCRIPT DE INVESTIGACIÓN, NO FORMA PARTE DEL PIPELINE: se ejecuta a mano; el
+orquestador y el dashboard no lo usan.
+
 Nota de nombre: se llamó test_ganadoras.py originalmente, pero es un
 experimento de validación (30-60 min, red + BD), no un test unitario —
 lo renombré para que pytest no lo confunda con la suite de tests/

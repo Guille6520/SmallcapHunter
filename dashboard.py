@@ -1,13 +1,18 @@
 """
 dashboard.py — interfaz Streamlit de SmallCap Hunter
 
-Cinco vistas:
+Seis vistas (y una séptima, personal y apagada por defecto, ver más abajo):
   - Panorama: el embudo completo (de miles de empresas a un puñado de
     candidatas) y los últimos veredictos de los agentes.
-  - Candidatas: todas las candidatas vigentes con su fecha de análisis.
+  - Candidatas: todas las candidatas vigentes, ordenadas por el mejor voto de
+    los Detectives, con el sello del Auditor de cada análisis y qué cambió
+    desde la última pasada.
+  - Sectores: el ETF del sector de cada candidata frente al Russell 2000 y
+    titulares del tema. Es información de contexto: los agentes no la ven.
   - Empresa: la ficha de una candidata — scores desagregados, compras
-    de insiders, evolución de revenue y margen, el MD&A real, y lo que
-    dijeron el Detective y el Auditor.
+    de insiders, evolución de revenue y margen, el MD&A real, lo que
+    dijeron los Detectives y el sello (VERIFICADO / CON_AVISOS) con que el
+    Auditor valoró cada análisis. El Auditor no da un veredicto propio.
   - Chat: conversación libre con un LLM que tiene delante el MISMO
     contexto que vio el Detective (scores, insiders, MD&A, veredictos).
     Para preguntarle cosas como "¿por qué el score temporal es tan
@@ -15,13 +20,16 @@ Cinco vistas:
   - Observabilidad: coste, latencia y tasa de error de cada llamada real
     a un LLM (Detective, Auditor, chat, resumen de negocio) — ver
     vista_observabilidad() y la tabla llm_calls en schema.sql.
+  - Seguimiento (solo si MOSTRAR_SEGUIMIENTO=1 en el .env): vista personal
+    de quien analiza; sin esa variable no aparece ni se descargan precios.
 
 El chat reutiliza obtener_contexto_empresa de detective.py — así lo que
 el chat "sabe" de una empresa es exactamente lo que sabe el pipeline,
 no una versión distinta. Nota honesta: el chat NO pasa por el
 verificador de citas (es conversación, no análisis persistido), así que
-sus respuestas pueden contener imprecisiones — el veredicto oficial es
-el de la tabla auditorias, no lo que diga el chat.
+sus respuestas pueden contener imprecisiones — el veredicto de una
+empresa es el de sus Detectives (tabla auditorias, ver votos.py), no lo
+que diga el chat.
 
 Cómo lanzarlo:
   streamlit run dashboard.py
@@ -42,6 +50,8 @@ from detective import (
     describir_error, clasificar_error,
 )
 from notificador_telegram import enviar_telegram
+from votos import ORDEN_VEREDICTO, con_sello, mejor_voto, texto_sello, texto_votos
+from verificaciones import VERSION_AUDITOR, asegurar_esquema as asegurar_esquema_verificaciones
 from dotenv import load_dotenv
 
 # Cargo el .env de la carpeta si existe — así las claves no dependen de
@@ -127,8 +137,8 @@ def leer_corte(conn=None) -> int:
 
 def chat_claude(mensajes: list) -> str:
     # Ocupa el hueco que antes tenía "groq" (Nemotron vía OpenRouter,
-    # retirado en sep-2026: JSON roto y 429/503 frecuentes, medido con
-    # benchmark_modelos.py). La API de Anthropic lleva el system prompt
+    # retirado en sep-2026: JSON roto y 429/503 frecuentes, medido a mano
+    # en esas pasadas). La API de Anthropic lleva el system prompt
     # aparte, no como un mensaje más de la lista -- lo separo aquí.
     from anthropic import Anthropic
     sistema = next((m["content"] for m in mensajes if m["role"] == "system"), None)
@@ -194,7 +204,7 @@ def construir_contexto_chat(conn, ticker: str) -> str:
         """
         select a.modelo_llm, a.veredicto, a.fecha_analisis, a.respuesta_llm
         from auditorias a join empresas e on e.id = a.empresa_id
-        where e.ticker = %s and a.veredicto is not null
+        where e.ticker = %s and a.veredicto is not null and a.respuesta_llm ? 'veredicto_preliminar'
         order by a.fecha_analisis desc limit 6
         """,
         (ticker,)
@@ -324,7 +334,8 @@ def vista_panorama():
     ).iloc[0]["n"]
 
     seguras = query_df(
-        "select count(distinct empresa_id) as n from auditorias where veredicto = 'MUY_INTERESANTE'"
+        "select count(distinct empresa_id) as n from (select distinct on (empresa_id, modelo_llm) empresa_id, veredicto from auditorias where veredicto is not null and respuesta_llm ? 'veredicto_preliminar' and modelo_llm in ('claude', 'gemini') order by empresa_id, modelo_llm, fecha_analisis desc) u "
+        "where veredicto = 'MUY_INTERESANTE'"
     ).iloc[0]["n"]
 
     c1, c2, c3, c4, c5, c6 = st.columns(6)
@@ -380,6 +391,7 @@ def vista_panorama():
             from auditorias a
             join empresas e on e.id = a.empresa_id
             where a.veredicto is not null
+              and a.respuesta_llm ? 'veredicto_preliminar'
             order by a.fecha_analisis desc
             limit 20
             """
@@ -405,13 +417,7 @@ ETIQUETA_VEREDICTO = {
     "NADA_INTERESANTE": "🔴 NADA_INTERESANTE",
     "ALUCINACION": "🟣 ALUCINACION",
 }
-# Las que aún no han pasado por los agentes van entre INTERESANTE y
-# NADA_INTERESANTE: un score alto sin juzgar todavía merece más atención
-# que algo que un agente ya descartó, pero no que algo ya confirmado.
-ORDEN_VEREDICTO = {
-    "MUY_INTERESANTE": 0, "INTERESANTE": 1, "SIN_ANALIZAR": 2,
-    "NADA_INTERESANTE": 3, "ALUCINACION": 4,
-}
+# El orden (ORDEN_VEREDICTO) vive en votos.py, con sus tests.
 
 
 def _dias_desde(fecha):
@@ -438,8 +444,15 @@ def _texto_analisis(fecha) -> str:
 
 def _leer_candidatas(corte_llm: int) -> pd.DataFrame:
     """Todas las empresas con veredicto, más las que tienen score >=
-    corte_llm aunque ningún agente las haya analizado todavía."""
-    return query_df(
+    corte_llm aunque ningún agente las haya analizado todavía.
+
+    El veredicto de una empresa es el de sus Detectives (voto_claude y voto_gemini,
+    el último de cada uno), nunca el del Auditor: ver votos.py. «veredicto» es el
+    mejor de los dos votos y sirve para ordenar. sello_claude / sello_gemini son el sello
+    del Auditor sobre ese último análisis (VERIFICADO / CON_AVISOS, o nulo si aún no se
+    ha verificado): no cambian el voto, dicen cuánto fiarse de él."""
+    asegurar_esquema_verificaciones(conectar_db())
+    df = query_df(
         """
         with ids as (
             select empresa_id from auditorias where veredicto is not null
@@ -448,16 +461,35 @@ def _leer_candidatas(corte_llm: int) -> pd.DataFrame:
             where veredicto is null and score_total >= %s
         )
         select e.id, e.ticker, e.nombre, e.sector,
-               ultimo.veredicto, ultimo.fecha_analisis,
+               vc.veredicto as voto_claude, vg.veredicto as voto_gemini,
+               sc.sello as sello_claude, sg.sello as sello_gemini,
+               greatest(vc.fecha_analisis, vg.fecha_analisis) as fecha_analisis,
                capa2.score_total,
                ins.ultima_compra
         from ids
         join empresas e on e.id = ids.empresa_id
         left join lateral (
-            select veredicto, fecha_analisis from auditorias
-            where empresa_id = e.id and veredicto is not null
+            select id, veredicto, fecha_analisis from auditorias
+            where empresa_id = e.id and modelo_llm = 'claude' and veredicto is not null
+              and respuesta_llm ? 'veredicto_preliminar'
             order by fecha_analisis desc limit 1
-        ) ultimo on true
+        ) vc on true
+        left join lateral (
+            select id, veredicto, fecha_analisis from auditorias
+            where empresa_id = e.id and modelo_llm = 'gemini' and veredicto is not null
+              and respuesta_llm ? 'veredicto_preliminar'
+            order by fecha_analisis desc limit 1
+        ) vg on true
+        left join lateral (
+            select sello from verificaciones
+            where detective_auditoria_id = vc.id and version_auditor = %s
+            order by fecha desc limit 1
+        ) sc on true
+        left join lateral (
+            select sello from verificaciones
+            where detective_auditoria_id = vg.id and version_auditor = %s
+            order by fecha desc limit 1
+        ) sg on true
         left join lateral (
             select score_total from auditorias
             where empresa_id = e.id and veredicto is null
@@ -469,22 +501,27 @@ def _leer_candidatas(corte_llm: int) -> pd.DataFrame:
             where empresa_id = e.id and tipo_transaccion = 'P'
         ) ins on true
         """,
-        (corte_llm,),
+        (corte_llm, VERSION_AUDITOR, VERSION_AUDITOR),
     )
+    df["veredicto"] = [mejor_voto(c, g) for c, g in zip(df["voto_claude"], df["voto_gemini"])]
+    return df
 
 
 def _tabla_candidatas(df: pd.DataFrame, con_score: bool) -> pd.DataFrame:
     tabla = pd.DataFrame({
         "Ticker": df["ticker"],
         "Empresa": df["nombre"],
-        "Veredicto": df["veredicto"].map(ETIQUETA_VEREDICTO).fillna("⚪ sin analizar"),
+        "Claude": [con_sello(e, s) for e, s in zip(df["voto_claude"].map(ETIQUETA_VEREDICTO).fillna("⚪ sin voto"),
+                                                    df["sello_claude"])],
+        "Gemini": [con_sello(e, s) for e, s in zip(df["voto_gemini"].map(ETIQUETA_VEREDICTO).fillna("⚪ sin voto"),
+                                                    df["sello_gemini"])],
         "Último análisis": df["fecha_analisis"].map(_texto_analisis),
         "Última compra de insiders": df["ultima_compra"].map(
             lambda f: "—" if pd.isna(f) else f"{f:%Y-%m-%d} ({_hace(f)})"
         ),
     })
     if con_score:
-        tabla.insert(3, "Score /40", df["score_total"])
+        tabla.insert(4, "Score /40", df["score_total"])
     return tabla
 
 
@@ -497,7 +534,7 @@ def _detalle_candidata(conn, r, con_score: bool):
         st.markdown(f"#### {ticker} — {r['nombre']}")
         score = f"score {int(r['score_total'])}/40" if con_score else "sin score vigente"
         etiqueta = (
-            f"<span class='veredicto-{veredicto}'>{veredicto}</span>"
+            f"<span class='veredicto-{veredicto}'>{texto_votos(r['voto_claude'], r['voto_gemini'])}</span>"
             if veredicto else "sin analizar"
         )
         st.markdown(
@@ -558,7 +595,7 @@ def _detalle_candidata(conn, r, con_score: bool):
             ):
                 puntos = resp.get(clave_json) or []
                 if puntos:
-                    st.markdown(f"**{titulo}**\n" + "\n".join(f"- {p}" for p in puntos))
+                    st.markdown(sin_latex(f"**{titulo}**\n" + "\n".join(f"- {p}" for p in puntos)))
 
 
 def _bloque_candidatas(conn, df: pd.DataFrame, clave: str, con_score: bool):
@@ -586,6 +623,59 @@ def _bloque_candidatas(conn, df: pd.DataFrame, clave: str, con_score: bool):
         st.caption("Selecciona una fila para ver el resumen, los puntos fuertes y los débiles.")
 
 
+def _bloque_cambios():
+    """Qué cambió desde la última pasada (ver cambios.py): quién entra y sale de la
+    lista, a quién le cambia el score y qué análisis cambiaron de veredicto."""
+    import cambios
+
+    try:
+        # Sin conn.close(): la conexión es la compartida de st.cache_resource, y cerrarla
+        # dejaba sin base de datos al resto de vistas hasta reiniciar el dashboard.
+        conn = conectar_db()
+        lista = cambios.leer_cambios_de_lista(conn)
+        veredictos = cambios.leer_cambios_de_veredicto(conn)
+    except Exception as e:
+        st.warning(f"No pude calcular los cambios: {e}")
+        return
+
+    with st.expander("🔄 Qué cambió desde la última pasada"):
+        if not lista["hay_historial"]:
+            st.info(
+                "Todavía solo hay una foto de las candidatas. Las entradas, salidas y cambios de score se "
+                "verán a partir de la próxima pasada del orquestador."
+            )
+        else:
+            st.caption(f"Entre el {lista['desde']:%d/%m/%Y} y el {lista['hasta']:%d/%m/%Y}.")
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Entran", len(lista["entran"]))
+            c2.metric("Salen", len(lista["salen"]))
+            c3.metric("Suben de score", len(lista["suben"]))
+            c4.metric("Bajan de score", len(lista["bajan"]))
+            for titulo, clave, formato in (
+                ("Entran en la lista", "entran", lambda f: f"**{f[0]}** · {f[1]} · score {f[2]}"),
+                ("Salen de la lista", "salen", lambda f: f"**{f[0]}** · {f[1]} · tenía {f[2]}"),
+                ("Suben de score", "suben", lambda f: f"**{f[0]}** · {f[1]} · {f[2]} → {f[3]}"),
+                ("Bajan de score", "bajan", lambda f: f"**{f[0]}** · {f[1]} · {f[2]} → {f[3]}"),
+            ):
+                if lista[clave]:
+                    st.markdown(f"**{titulo}**")
+                    for fila in lista[clave]:
+                        st.markdown("- " + sin_latex(formato(fila)))
+
+        st.markdown(f"**Análisis que cambiaron de veredicto** (últimos {cambios.DIAS_VEREDICTOS} días)")
+        if not veredictos:
+            st.caption("Ninguno: cada modelo dio el mismo veredicto que la vez anterior.")
+        else:
+            st.dataframe(
+                pd.DataFrame(veredictos, columns=["ticker", "empresa", "modelo", "antes", "ahora", "fecha"]),
+                hide_index=True, use_container_width=True,
+            )
+            st.caption(
+                "Ojo: si el cambio coincide con un cambio de prompt o de protocolo, refleja la nueva forma de "
+                "preguntar y no un cambio en la empresa."
+            )
+
+
 def vista_candidatas():
     st.subheader("🏆 Candidatas por interés")
     corte = leer_corte()
@@ -593,9 +683,12 @@ def vista_candidatas():
         f"Incluir también las que no llegan al corte de LLM (score < {corte}/40)"
     )
     st.caption(
-        "Ordenadas por veredicto y luego por score. Las que aún no han pasado "
-        "por los agentes salen como «sin analizar». Selecciona una fila para "
-        "ver el detalle."
+        "Ordenadas por el mejor voto de los dos Detectives y luego por score. "
+        "El veredicto es el de los Detectives. El Auditor no opina: verifica cada análisis "
+        "contra el texto original y le pone un sello (✅ las cifras y afirmaciones se "
+        "sostienen · ⚠️ hay avisos, míralos en la ficha · sin sello: aún sin verificar). "
+        "Las que aún no han pasado por los agentes salen como «sin voto». "
+        "Selecciona una fila para ver el detalle."
     )
 
     # score_total y veredicto viven en filas DISTINTAS: scorer_capa2.py
@@ -613,6 +706,8 @@ def vista_candidatas():
     if candidatas.empty:
         st.info("Todavía no hay candidatas ni veredictos.")
         return
+
+    _bloque_cambios()
 
     candidatas["orden"] = candidatas["veredicto"].fillna("SIN_ANALIZAR").map(ORDEN_VEREDICTO)
     vigentes = candidatas[candidatas["score_total"].notna()].sort_values(
@@ -708,7 +803,7 @@ def vista_empresa(ticker: str):
     st.markdown("##### Análisis de los agentes")
     analisis = query_df(
         """
-        select a.modelo_llm, a.veredicto, a.fecha_analisis,
+        select a.id, a.modelo_llm, a.veredicto, a.fecha_analisis,
                a.respuesta_llm, a.verificacion_citas
         from auditorias a join empresas e on e.id = a.empresa_id
         where e.ticker = %s and a.veredicto is not null
@@ -716,6 +811,20 @@ def vista_empresa(ticker: str):
         """,
         (ticker,)
     )
+    # El sello del Auditor de cada análisis (el más reciente si hay varios)
+    asegurar_esquema_verificaciones(conectar_db())
+    sellos = query_df(
+        """
+        select v.detective_auditoria_id, v.modelo_auditor, v.sello, v.resumen
+        from verificaciones v join empresas e on e.id = v.empresa_id
+        where e.ticker = %s and v.version_auditor = %s
+        order by v.fecha desc
+        """,
+        (ticker, VERSION_AUDITOR)
+    )
+    sello_de = {}
+    for s in sellos.itertuples():
+        sello_de.setdefault(int(s.detective_auditoria_id), s)
     if analisis.empty:
         st.info(
             f"Sin análisis LLM todavía. Lánzalo con: "
@@ -729,7 +838,7 @@ def vista_empresa(ticker: str):
 
         with st.container(border=True):
             st.markdown(
-                f"**{'Auditor' if es_auditor else 'Detective'}** · {r.modelo_llm} · "
+                f"**{'Auditor v1 (retirado: daba un veredicto propio)' if es_auditor else 'Detective'}** · {r.modelo_llm} · "
                 f"{r.fecha_analisis:%Y-%m-%d %H:%M} → "
                 f"<span class='veredicto-{r.veredicto}'>{r.veredicto}</span> · "
                 + texto_citas_verificadas(verif),
@@ -750,6 +859,7 @@ def vista_empresa(ticker: str):
                     st.markdown(sin_latex(f"**Tesis:** {resp['tesis_inversion']}"))
                 if resp.get("riesgos"):
                     st.markdown(sin_latex("**Riesgos:** " + "; ".join(resp["riesgos"])))
+                mostrar_sello(sello_de.get(int(r.id)))
 
             mostrar_citas(resp, verif)
 
@@ -760,13 +870,55 @@ def sin_latex(texto: str) -> str:
     return str(texto).replace("$", r"\$")
 
 
+MOTIVO_CIFRA = {
+    "sin_soporte": "no aparece en el texto ni se deriva de él",
+    "contradicha": "el texto da otra cifra",
+    "derivacion_sin_base": "dice que es un cálculo, pero los números del cálculo no están en el texto",
+    "sin_adjudicar": "el programa no la encontró en el texto y el Auditor no la comentó",
+}
+
+
+def mostrar_sello(s):
+    """El sello del Auditor sobre un análisis de Detective y, si hay avisos, qué los
+    causa. `s` es la fila de `verificaciones` (o None si aún no se ha verificado)."""
+    if s is None:
+        st.caption(texto_sello(None))
+        return
+    resumen = s.resumen if isinstance(s.resumen, dict) else json.loads(s.resumen or "{}")
+    st.markdown(
+        f"**{texto_sello(s.sello, resumen.get('n_avisos'), s.modelo_auditor)}** · "
+        f"{resumen.get('respaldadas', 0)} de {resumen.get('n_afirmaciones', 0)} afirmaciones respaldadas "
+        f"por el texto original"
+        + (f" · {resumen['sin_respaldo']} sin respaldo" if resumen.get("sin_respaldo") else "")
+    )
+    avisos, contradichas, riesgos = (resumen.get("avisos_cifras") or [], resumen.get("afirmaciones_contradichas") or [],
+                                     resumen.get("riesgos_omitidos") or [])
+    if not (avisos or contradichas or riesgos):
+        return
+    with st.expander("Qué ha encontrado el Auditor"):
+        for a in avisos:
+            linea = f"- **Cifra «{a.get('cifra')}»**: {MOTIVO_CIFRA.get(a.get('motivo'), a.get('motivo'))}."
+            if a.get("explicacion"):
+                linea += f" {a['explicacion']}"
+            if a.get("contexto"):
+                linea += f" _(en la tesis: …{a['contexto']}…)_"
+            st.markdown(sin_latex(linea))
+        for c in contradichas:
+            st.markdown(sin_latex(f"- **El texto contradice esta afirmación:** {c.get('afirmacion')}  \n"
+                                  f"  Cita del documento: «{c.get('cita_literal')}»"))
+        if riesgos:
+            st.markdown("**Riesgos del texto que la tesis no menciona** (cada uno con su cita comprobada):")
+            for r in riesgos:
+                st.markdown(sin_latex(f"- {r.get('riesgo')}  \n  «{r.get('cita_literal')}»"))
+
+
 # Un color fijo por modelo en todos los gráficos (el color sigue a la entidad,
 # no a su posición). Son los dos primeros del orden categórico validado en
 # daltonismo; groq es histórico y va en gris para que no compita.
 COLORES_MODELO = {"claude": "#2a78d6", "gemini": "#eb6834", "groq": "#9a9892"}
 COLOR_CON_SOPORTE = "#1baf7a"
 COLOR_LITERAL = "#9a9892"
-COLORES_RELACION = {"MEJORA": "#1baf7a", "CONFIRMA": "#9a9892", "EMPEORA": "#e34948"}
+COLORES_SELLO = {"VERIFICADO": "#1baf7a", "CON_AVISOS": "#e8a33d"}
 
 
 def _estilo(grafico: alt.Chart, alto: int = None) -> alt.Chart:
@@ -1102,10 +1254,11 @@ def bloque_calidad():
     """
     La calidad de lo que dicen los modelos, no solo lo que cuestan: qué
     parte de sus citas existe de verdad en el documento, cuántos análisis
-    acaba marcando el verificador como ALUCINACION, qué hace el Auditor
-    con el veredicto del Detective y cuánto coinciden los dos modelos.
-    Sale de lo que el pipeline ya guarda en auditorias: ninguna llamada
-    extra a un LLM.
+    acaba marcando el verificador como ALUCINACION, qué sellos pone el
+    Auditor a los análisis (y qué hacía el de la v1 con el veredicto del
+    Detective, como histórico) y cuánto coinciden los dos modelos.
+    Sale de lo que el pipeline ya guarda en auditorias y verificaciones:
+    ninguna llamada extra a un LLM.
 
     Dos porcentajes, a propósito. "Literales" es el estricto de siempre: la
     cita aparece tal cual en el documento. "Con soporte" es el del
@@ -1211,19 +1364,19 @@ def bloque_calidad():
             )
 
     with der:
-        st.markdown("**Qué hace el Auditor con el veredicto del Detective**")
+        st.markdown("**Sellos del Auditor sobre los análisis de los Detectives**")
+        st.caption("El Auditor no opina: comprueba cifras y afirmaciones. Cada barra es el modelo que audita (revisa los análisis del otro).")
+        asegurar_esquema_verificaciones(conectar_db())
         relaciones = query_df("""
-            select modelo_llm as auditor,
-                   respuesta_llm->>'relacion_con_veredicto_detective' as relacion,
-                   count(*) as n
-            from auditorias
-            where respuesta_llm ? 'relacion_con_veredicto_detective'
+            select modelo_auditor as auditor, sello as relacion, count(*) as n
+            from verificaciones
+            where version_auditor = %s
             group by 1, 2
-        """)
+        """, (VERSION_AUDITOR,))
         if not relaciones.empty:
             # Apilo yo las barras (x0..x1) para poder centrar el número de cada
             # tramo: dejar que Altair apile el texto lo pegaba al borde.
-            orden = list(COLORES_RELACION)
+            orden = list(COLORES_SELLO)
             relaciones["n"] = relaciones["n"].astype(int)
             relaciones["relacion"] = pd.Categorical(relaciones["relacion"], categories=orden, ordered=True)
             relaciones = relaciones.sort_values(["auditor", "relacion"])
@@ -1235,12 +1388,12 @@ def bloque_calidad():
                 y=alt.Y("auditor:N", title=None, sort=["claude", "gemini", "groq"]),
                 color=alt.Color(
                     "relacion:N", title=None,
-                    scale=alt.Scale(domain=orden, range=list(COLORES_RELACION.values())),
+                    scale=alt.Scale(domain=orden, range=list(COLORES_SELLO.values())),
                     legend=alt.Legend(orient="top"),
                 ),
             )
             barras = base.mark_bar(size=26, stroke="white", strokeWidth=2).encode(
-                x=alt.X("x0:Q", title="auditorías"), x2="x1:Q",
+                x=alt.X("x0:Q", title="auditorías", axis=alt.Axis(tickMinStep=1, format="d")), x2="x1:Q",
                 tooltip=[alt.Tooltip("auditor:N"), alt.Tooltip("relacion:N"), alt.Tooltip("n:Q", title="auditorías")],
             )
             # color=alt.value: sin esto el texto hereda el color de su barra y no se ve
@@ -1249,6 +1402,20 @@ def bloque_calidad():
                 text=alt.condition(alt.datum.n >= 3, alt.Text("n:Q"), alt.value("")),
             )
             mostrar_grafico(alt.layer(barras, numeros), alto=150)
+        else:
+            st.caption("Todavía no hay sellos: el Auditor aún no ha verificado ningún análisis.")
+
+        historico = query_df("""
+            select count(*) filter (where respuesta_llm->>'relacion_con_veredicto_detective' = 'EMPEORA') as empeora,
+                   count(*) as total
+            from auditorias where respuesta_llm ? 'relacion_con_veredicto_detective'
+        """).iloc[0]
+        if historico.total:
+            st.caption(
+                f"Histórico del Auditor v1 (retirado): daba su propio veredicto y declaraba que empeoraba el del "
+                f"Detective en {int(historico.empeora)} de {int(historico.total)} auditorías, también con sus "
+                f"propios análisis (la etiqueta exagera: su veredicto real fue más bajo en menos casos). Por eso el Auditor actual no opina: verifica."
+            )
 
         acuerdo = query_df("""
             with ult as (
@@ -1425,6 +1592,35 @@ def vista_seguimiento():
         "Máx. y mín.: lo más alto y lo más bajo que llegó a cotizar desde el análisis, respecto al precio de ese "
         "día. Un análisis de hace un par de días todavía no significa nada: mira la columna «del año»."
     )
+
+    st.markdown("**¿Es la empresa o es su sector?**")
+    st.caption(
+        "Cada empresa frente al ETF de su sector (y al Russell 2000) en el mismo periodo exacto, desde el día "
+        "del análisis. Si la acción sube pero su sector sube lo mismo, el mérito no es de la empresa. "
+        "Describe lo que ya pasó; no predice nada. El sector sale del código SIC de la SEC."
+    )
+    filas_sector = [c for c in cartera if c.get("vs_sector")]
+    if not filas_sector:
+        st.info("Todavía no hay precios de los ETFs de sector para comparar (los baja contexto_sector.py en cada pasada).")
+    else:
+        sector_df = pd.DataFrame([{
+            "ticker": c["ticker"], "sector": c["sector"], "ETF": c["etf"],
+            "empresa": 100 * c["vs_sector"]["retorno"],
+            "su sector": 100 * c["vs_sector"]["retorno_sector"],
+            "diferencia": 100 * c["vs_sector"]["exceso_sector"],
+            "IWM": None if c["vs_sector"]["retorno_iwm"] is None else 100 * c["vs_sector"]["retorno_iwm"],
+            "lectura": ss.lectura_frente_al_sector(c["vs_sector"]["exceso_sector"]),
+            "días": c["vs_sector"]["dias"],
+        } for c in filas_sector])
+        pct_s = st.column_config.NumberColumn(format="%+.1f%%")
+        st.dataframe(
+            sector_df, use_container_width=True, hide_index=True,
+            column_config={"empresa": pct_s, "su sector": pct_s, "IWM": pct_s,
+                           "diferencia": st.column_config.NumberColumn("diferencia (pts)", format="%+.1f")},
+        )
+        sin_etf = len(cartera) - len(filas_sector)
+        if sin_etf:
+            st.caption(f"{sin_etf} empresas sin comparación: sin ETF de referencia para su sector o sin precios.")
 
     st.markdown("**Cómo evoluciona cada una desde su análisis** (100 = el precio el día del análisis)")
     lineas = pd.DataFrame([

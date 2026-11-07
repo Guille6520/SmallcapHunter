@@ -7,9 +7,9 @@ construya una tesis de inversión: por qué esta empresa podría estar en
 una fase de inflexión, qué catalizador no obvio ve, y qué riesgos identifica.
 
 La pieza más importante de este archivo no es el LLM — es el
-verificador de citas. Un estudio reciente de 2026 encontró que varios
-modelos líderes se inventan datos financieros con apariencia de
-autoridad cuando el documento fuente tiene huecos. Por eso exijo que el
+verificador de citas. Un modelo de lenguaje puede inventarse datos
+financieros con apariencia de autoridad, sobre todo cuando el documento
+fuente tiene huecos. Por eso exijo que el
 Detective cite frases o cifras concretas del texto, y luego compruebo
 mecánicamente (sin otro LLM) que esas citas existen de verdad en el
 texto_mda original. Si no existen, lo marco como alucinación — no me
@@ -565,18 +565,19 @@ def llamar_claude(prompt: str) -> str:
     Llamo a Claude Haiku 4.5 vía la API de Anthropic. Ocupa el hueco que
     antes tenía un modelo gratuito vía OpenRouter (Llama, GPT-OSS,
     Nemotron): fallaba con JSON roto o 429/503 del proveedor en una
-    parte relevante de los casos (medido en las pasadas de sep-2026), y
-    de pago pero sin ese cuello de botella cuesta céntimos por llamada.
+    parte relevante de los casos (medido en las pasadas de sep-2026).
+    Claude es de pago, pero no tiene ese cuello de botella y cuesta
+    céntimos por llamada.
 
     Claude no tiene modo JSON forzado como Gemini: a veces envuelve la
     respuesta en una valla ```json. La quito aquí para que el caller
     reciba JSON limpio siempre.
 
-    max_tokens=8000: con 2000 el Auditor devolvía el JSON cortado en 3 de
-    10 llamadas, y con 4000 volvió a pasar en 2 (llm_calls registró
-    tokens_salida == tope exacto en todas). Desde que las citas llevan
-    también su traducción (cita_es) la media del Detective es ~3.000
-    tokens y el máximo tocó 4000. Solo pagas los tokens que el modelo usa
+    max_tokens=8000: con 2000 el Auditor (el de la v1) devolvía el JSON
+    cortado en 3 llamadas, y con 4000 volvió a pasar en 2 (llm_calls
+    registró tokens_salida == tope exacto en todas). Desde que las citas
+    llevan también su traducción (cita_es) la media del Detective es
+    ~2.700 tokens y el máximo tocó 4000. Solo pagas los tokens que el modelo usa
     de verdad, así que subir el tope no encarece las respuestas que ya
     cabían.
     """
