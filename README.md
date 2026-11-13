@@ -27,7 +27,7 @@ Hasta hoy: 187 análisis en 64 empresas, 348 llamadas a modelos y unos 3,7 $ de 
 | ¿Se inventan las citas los modelos? | Con el primer prompt, el verificador marcaba como alucinación 10 de 21 análisis de Claude y 20 de 51 de Gemini. Con el actual, 0 de 81, y el 95 % de las citas tiene soporte en el texto. Parte de la mejora es medir mejor, no mejores modelos. | [evaluacion-citas.md](docs/evaluacion-citas.md) |
 | ¿Sirve un auditor que da su propio veredicto? | No. Mi primer Auditor declaró que el análisis empeoraba en 96 de 130 auditorías, y en 24 de 24 cuando revisaba los suyos. Era ruido. Lo rehíce para que verifique en vez de opinar. | [hallazgos.md, vueltas 4 y 8](docs/hallazgos.md) |
 | ¿Coinciden los dos modelos? | En 18 de 36 empresas: lo mismo que el azar. Por eso enseño los dos votos y no una media. | [limitaciones.md](docs/limitaciones.md) |
-| ¿Es fiable el sello del Auditor? | Aún no lo sé. Hay 50 sellos (29 verificados y 21 con avisos), y el resultado depende demasiado de qué modelo audita. Estoy etiquetando los avisos a mano para medir las falsas alarmas. | [limitaciones.md](docs/limitaciones.md) |
+| ¿Es fiable el sello del Auditor? | En parte. Etiqueté a mano 24 afirmaciones que el Auditor dio por contradichas: 15 eran errores reales (62 %), 8 eran fallos del Auditor y 1 una pedantería. De 26 cifras marcadas por el código pude decidir 15, y 11 eran errores reales; las otras 11 no pude decidirlas ni con los datos delante. Muestra pequeña y un solo etiquetador. Lo que no he medido es cuántos errores se le escapan a un `VERIFICADO`, y el resultado depende demasiado de qué modelo audita. | [limitaciones.md](docs/limitaciones.md) |
 | ¿La selección bate al mercado? | **No hay evidencia de que lo haga.** Es una herramienta de investigación, no un consejo de inversión. | [hallazgos.md, vuelta 1](docs/hallazgos.md) |
 
 Este proyecto no es un selector de acciones. Es un sistema de LLM donde cada afirmación se puede comprobar, y donde he medido lo que falla en vez de esconderlo. Lo construí como inversor, después de más de diez años en los mercados: quería una herramienta que leyera por mí los informes que no tengo tiempo de leer, y que me dijera cuánto fiarme de lo que cuenta.
@@ -37,7 +37,7 @@ Este proyecto no es un selector de acciones. Es un sistema de LLM donde cada afi
 - **Votos ciegos.** Dos modelos de familias distintas analizan la misma empresa por separado. El veredicto son sus dos votos, y el desacuerdo se ve.
 - **Citas verificadas por código.** Una cita traducida, parafraseada o inventada no cuenta como respaldo. Lo decide un programa, sin otro modelo de por medio.
 - **Un Auditor que verifica.** Una parte es código (busca cada cifra de la tesis en el texto) y otra es el modelo, acotado: solo puede absolver una cifra si enseña un cálculo cuyos operandos están en el documento.
-- **Los fallos, documentados.** Cada cambio de diseño viene de una medición, incluidas las que salieron mal: [doce vueltas, con sus números](docs/hallazgos.md).
+- **Los fallos, documentados.** Cada cambio de diseño viene de una medición, incluidas las que salieron mal: [trece vueltas, con sus números](docs/hallazgos.md).
 
 ![Candidatas con el voto de cada Detective y su sello](docs/capturas/candidatas.png)
 
@@ -64,7 +64,7 @@ Levanta Postgres con pgvector, la API (<http://localhost:8000/docs>) y el dashbo
 
 | Documento | Qué cuenta |
 |---|---|
-| [hallazgos.md](docs/hallazgos.md) | Las doce vueltas del proyecto: qué probé, qué esperaba, qué pasó y qué decidí |
+| [hallazgos.md](docs/hallazgos.md) | Las trece vueltas del proyecto: qué probé, qué esperaba, qué pasó y qué decidí |
 | [limitaciones.md](docs/limitaciones.md) | Todo lo que no sé o no funciona, con sus cifras |
 | [evaluacion-citas.md](docs/evaluacion-citas.md) | Cómo se midió si los modelos se inventan las citas |
 | [arranque.md](docs/arranque.md) | Instalación, ingesta, pipeline, orquestador, dashboard y estructura del código |
@@ -72,7 +72,7 @@ Levanta Postgres con pgvector, la API (<http://localhost:8000/docs>) y el dashbo
 
 ## Lo siguiente
 
-1. **Un conjunto de referencia etiquetado a mano**, para saber cuántos avisos del Auditor son errores reales. En curso.
+1. **Medir lo que el sello deja pasar**: etiquetar a mano 30 análisis completos, incluidos los `VERIFICADO`, para saber cuántos errores no avisa. Ya medí cuántos de sus avisos son reales.
 2. **Experimentos de evaluación**: repetir análisis con los mismos datos, quitar el score del prompt, dar más texto a los modelos y plantar errores para medir al Auditor.
 3. **Contrastar el score con la literatura** en un backtest con las hipótesis fijadas de antemano.
 4. **Dar forma de paquete al código** y validar las respuestas de los modelos con esquemas.

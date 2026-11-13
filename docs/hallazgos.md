@@ -4,7 +4,7 @@ Esto es lo que probé, lo que esperaba, lo que pasó de verdad y lo que decidí,
 
 Cada vuelta termina con una línea de **virtud** (lo que me dejó) y otra de **coste** (lo que sigue mal o lo que me costó). Los números salen de mi base de datos, de los CSV del repo y de los scripts; cuando un número no se puede reproducir desde el repo, lo digo. Las fechas son de 2026.
 
-Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [Lo que todavía no sé](#lo-que-todavía-no-sé)
+Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [Lo que todavía no sé](#lo-que-todavía-no-sé)
 
 ---
 
@@ -248,11 +248,31 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 
 ---
 
+## 13. Etiquetar a mano lo que marca el Auditor (13 nov)
+
+**Qué probé.** Etiquetar a mano 50 casos que el Auditor v2 ya había marcado: 26 cifras que el código no encontró en el texto y 24 afirmaciones que el modelo dio por contradichas. Para cada cifra, con los datos de la base delante (compras sumadas por persona, trimestres con su fecha), elegí entre «el Detective se equivocó», «es correcta, sale de calcular con los datos», «es correcta, está tal cual» o «no puedo decidirlo». Para cada afirmación: contradicción real, pedantería, el Auditor se equivocó, el Detective no dijo eso, o no sé.
+
+**Qué esperaba.** Que una parte importante de las alarmas fueran falsas, como en el Auditor v1. No tenía una hipótesis más precisa.
+
+**Qué pasó.**
+- **Afirmaciones:** de 24, 15 eran contradicciones reales (62 %), 8 eran fallos del Auditor y 1 una pedantería. Varios de los 8 fallos del Auditor son sobre cifras y fechas (importe de las compras, periodo en que ocurrieron, posición frente a mínimos de 52 semanas).
+- **Cifras:** de 26, 11 eran errores del Detective, 4 cálculos correctos y 11 no pude decidirlas. Entre las 15 decididas, 73 % eran errores reales. Ninguna estaba tal cual en los datos, así que el verificador no marcó cifras que estuvieran escritas.
+- Los números pequeños pesan: con 24 y 15 casos, los intervalos aproximados son 43–79 % y 48–89 %.
+- Al revisar las cifras encontré un fallo en el propio verificador: `$3.2M` y `$4M` no se comprobaban nunca (se leían como 3,2 y 4, y el filtro ignora lo menor de 5), y las marcadas se mostraban sin su K o M. Lo corregí con tests; no cambia la cifra del 73 %, que se midió antes.
+
+**Qué decidí.** Contar la cifra con su límite: lo medido es la precisión de las alarmas, no cuánto se le escapa al sello. El siguiente paso es etiquetar 30 análisis completos, `VERIFICADO` incluidos.
+
+**Virtud.** Por primera vez el sello tiene una cifra de acierto hecha contra juicio humano,.
+
+**Coste.** Un solo etiquetador, casos elegidos entre los ya marcados, 11 cifras sin decidir (si yo no puedo decidirlas con los datos delante, el sello solo sirve si enseña de dónde sale cada cifra) y la mayoría de cifras son de Claude.
+
+---
+
 ## Lo que todavía no sé
 
 Cada pregunta tiene una forma de medirla.
 
-1. **¿Cuántas de las cifras que marca el sello son falsas alarmas?** Etiquetando a mano las 22 cifras marcadas (error, derivada o fuente que faltaba) y verificando los 13 análisis pendientes y revisando a mano las 14 afirmaciones «contradichas». Sin eso, el 21 % de análisis con alguna cifra marcada no dice nada de la calidad del Auditor.
+1. **¿Cuántos errores se le escapan al sello?** La vuelta 13 midió cuántas de sus alarmas son reales (62 % de las afirmaciones, 73 % de las cifras decididas), pero no lo que deja pasar. Habría que etiquetar a mano análisis completos, `VERIFICADO` incluidos, y contar los errores que no avisó.
 2. **¿Reduce errores el Auditor v2 en la práctica?** Habría que plantar errores en análisis nuevos o contrastar los avisos con una revisión humana. Hoy solo sé que detecta una cifra cambiada en un caso fácil.
 3. **¿Qué parte de la inestabilidad del veredicto es ruido del modelo?** Re-analizar la misma empresa N veces con los mismos datos y el mismo protocolo, y contar cuánto cambia. Hoy tengo 8 pares del mismo protocolo, con datos posiblemente distintos.
 4. **¿Debe el sello avisar por afirmaciones sin respaldo?** Mirando, sobre los análisis ya verificados, cuántas afirmaciones sin respaldo hay y cuántas eran errores reales.
