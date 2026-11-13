@@ -54,6 +54,35 @@ def test_los_anos_y_los_valores_pequenos_no_son_cifras_que_comprobar():
     assert cifras_sin_soporte("Desde 2024 la empresa gana un 3% más", FUENTE) == []
 
 
+def test_los_sufijos_k_m_b_cuentan_como_miles_millones_y_miles_de_millones():
+    # «$3.2M» antes se leía como 3,2, caía bajo el umbral de valores pequeños y no se
+    # comprobaba nunca; con «million» escrito sí se comprobaba.
+    assert [m["cifra"] for m in cifras_sin_soporte("El CEO compró $3.2M en acciones", FUENTE)] == ["$3.2M"]
+    assert [m["cifra"] for m in cifras_sin_soporte("El CEO compró $4M en acciones", FUENTE)] == ["$4M"]
+    assert [m["cifra"] for m in cifras_sin_soporte("Una deuda de $2B", FUENTE)] == ["$2B"]
+    # La cifra marcada conserva su sufijo (antes se mostraba «$280» en vez de «$280k»).
+    assert [m["cifra"] for m in cifras_sin_soporte("Compras por $280k", FUENTE)] == ["$280k"]
+
+
+def test_una_cifra_con_sufijo_que_esta_en_el_texto_no_se_marca():
+    assert cifras_sin_soporte("Ingresos de $48.2M", FUENTE) == []
+    assert cifras_sin_soporte("Ingresos de $48.2 million", FUENTE) == []
+    assert cifras_sin_soporte("Ingresos de $48,200k", "Revenue was 48,200 in thousands") == []
+
+
+def test_una_letra_suelta_tras_un_importe_no_es_un_sufijo():
+    # «$100 bought» no es «$100 billion» ni «$100B».
+    marcadas = cifras_sin_soporte("Por $100 bought shares", FUENTE)
+    assert [m["cifra"] for m in marcadas] == ["$100"]
+
+
+def test_el_resultado_de_un_calculo_con_sufijo_no_cuenta_como_operando():
+    fv = valores_del_texto("Cash 2,500 and 5,500 and 3,500. Purchases of 280,000 shares")
+    # 280000 es el propio resultado de «$280k»; sin contarlo quedan solo 2 operandos reales
+    assert derivacion_verificable("2,500 + 5,500 = 8,000 y 280,000", "$280k", fv)
+    assert not derivacion_verificable("280,000 y 2,500", "$280k", fv), "con un solo operando real no basta"
+
+
 def test_el_modelo_solo_absuelve_una_cifra_si_su_calculo_se_apoya_en_el_texto():
     fv = valores_del_texto(FUENTE)
     assert derivacion_verificable("48.2 / 43.0 - 1 = 12.1%", "12.1%", fv)

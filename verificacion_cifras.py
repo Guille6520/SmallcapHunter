@@ -24,10 +24,13 @@ pequeñas: las falsas alarmas a escala aún no están medidas.
 import re
 
 PCT = re.compile(r"\b\d{1,3}(?:\.\d+)?%")
-USD = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)\s?(million|billion|thousand)?", re.I)
+# Sufijo del importe: la palabra («$3.2 million») o la letra pegada a la cifra («$3.2M»,
+# «$280k»). Antes la letra se ignoraba: «$3.2M» se leía como 3,2, quedaba bajo el umbral de
+# valores pequeños y no se comprobaba nunca, y la cifra marcada se mostraba sin su K/M.
+USD = re.compile(r"\$\s?(\d[\d,]*(?:\.\d+)?)(?:\s?(million|billion|thousand)|([kmb])\b)?", re.I)
 NUM = re.compile(r"\d[\d,]*\.?\d*")
 ESCALAS = (1, 1e3, 1e-3, 1e6, 1e-6, 1e9, 1e-9)
-UNIDADES = {"million": 1e6, "billion": 1e9, "thousand": 1e3}
+UNIDADES = {"million": 1e6, "billion": 1e9, "thousand": 1e3, "k": 1e3, "m": 1e6, "b": 1e9}
 
 
 def valores_del_texto(texto: str) -> set:
@@ -57,7 +60,8 @@ def cifras_sin_soporte(tesis: str, fuente: str) -> list:
     for m in PCT.finditer(tesis or ""):
         candidatas.append((m.group(0), float(m.group(0)[:-1]), m.start()))
     for m in USD.finditer(tesis or ""):
-        valor = float(m.group(1).replace(",", "")) * UNIDADES.get((m.group(2) or "").lower(), 1)
+        sufijo = (m.group(2) or m.group(3) or "").lower()
+        valor = float(m.group(1).replace(",", "")) * UNIDADES.get(sufijo, 1)
         candidatas.append((m.group(0).strip(), valor, m.start()))
     sospechosas = []
     for texto, valor, pos in candidatas:
@@ -72,11 +76,15 @@ def derivacion_verificable(explicacion: str, cifra: str, fuente_valores: set) ->
     """El modelo solo puede ABSOLVER una cifra que el código marcó si su cálculo se
     apoya en números que están de verdad en el texto: al menos dos operandos (sin
     contar la propia cifra) que aparezcan en la fuente."""
-    propia = None
+    propias = []
     m = re.search(r"\d[\d,]*\.?\d*", cifra or "")
     if m:
         try:
-            propia = float(m.group(0).replace(",", "").rstrip("."))
+            base = float(m.group(0).replace(",", "").rstrip("."))
+            propias.append(base)
+            u = USD.search(cifra or "")
+            if u and (u.group(2) or u.group(3)):  # «$280k»: el resultado también puede salir como 280000
+                propias.append(base * UNIDADES[(u.group(2) or u.group(3)).lower()])
         except ValueError:
             pass
     operandos = []
@@ -85,7 +93,7 @@ def derivacion_verificable(explicacion: str, cifra: str, fuente_valores: set) ->
             v = float(n.replace(",", "").rstrip("."))
         except ValueError:
             continue
-        if propia is not None and abs(v - propia) <= max(0.06, 0.006 * propia):
+        if any(abs(v - p) <= max(0.06, 0.006 * p) for p in propias):
             continue  # el resultado, no un operando
         if v >= 3 and not 1900 <= v <= 2100:
             operandos.append(v)
