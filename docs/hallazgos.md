@@ -4,7 +4,7 @@ Esto es lo que probé, lo que esperaba, lo que pasó de verdad y lo que decidí,
 
 Cada vuelta termina con una línea de **virtud** (lo que me dejó) y otra de **coste** (lo que sigue mal o lo que me costó). Los números salen de mi base de datos, de los CSV del repo y de los scripts; cuando un número no se puede reproducir desde el repo, lo digo. Las fechas son de 2026.
 
-Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [Lo que todavía no sé](#lo-que-todavía-no-sé)
+Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [15](#15-nemotron-como-tercer-auditor-una-prueba-16-nov) Nemotron · [Lo que todavía no sé](#lo-que-todavía-no-sé)
 
 ---
 
@@ -288,6 +288,27 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 **Virtud.** Las reglas estaban fijadas antes y se aplicaron tal cual: H1 se queda en «sugerente» aunque el p ingenuo lo pasaba. Revisé el código buscando datos del futuro y no encontré ninguno, y recalculé desde el CSV la mediana y la ρ de volatilidad: coinciden con el informe.
 
 **Coste.** Es un techo, no un resultado. Al 33 % de los eventos le falta precio en Yahoo (en 2018-2021 solo se conserva entre el 33 y el 43 %), casi seguro por empresas deslistadas o quebradas, y eso sesga hacia arriba. La entrada cuenta desde la fecha de la operación y no de la presentación del Form 4, porque la base no guarda esa fecha. «Rutinario» sigue una versión cercana a la del artículo original, y la capitalización de la época solo se reconstruyó en el 26 % de los clusters. El análisis se corrió una vez sobre una caché parcial para probar el código y se vieron cifras provisionales antes de fijar el script final; no se cambiaron hipótesis ni umbrales después. Los scripts y los datos no están en este repositorio.
+
+---
+
+## 15. Nemotron como tercer auditor: una prueba (16 nov)
+
+**Qué probé.** El proyecto ya usó Nemotron (vía OpenRouter) y lo retiró en septiembre por JSON roto y errores 429/503. Probé otra vez, ahora con la API de NVIDIA y el modelo Nemotron 3 Ultra (razonamiento apagado, temperatura 0), como **tercer auditor**: audita los 50 análisis que ya tienen sello, con el mismo prompt, el mismo verificador de citas y la misma regla del sello que producción. Como audita a los dos Detectives, es el control que faltaba para saber si Gemini es más estricto o si los análisis de Claude son peores. Después le pasé una a una mis 24 afirmaciones etiquetadas a mano (vuelta 13).
+
+**Qué esperaba.** Que fallara como la vez anterior.
+
+**Qué pasó.**
+- **Fiabilidad.** 50 de 50 respuestas con JSON válido, ningún error de la API, ninguna truncada, mediana de 9,6 s por auditoría. El 92,4 % de sus citas tiene soporte en el texto (390 de 422), como Claude de auditor (92,3 %) y mejor que Gemini (87,4 %).
+- **Sobre los 23 análisis de Claude**, Gemini pone avisos en 18 (78 %) y Nemotron en 9 (39 %; p ≈ 0,02): Gemini es más estricto.
+- **Pero con el mismo auditor**, Nemotron pone avisos en el 39 % de los análisis de Claude (9 de 23) y en el 11 % de los de Gemini (3 de 27; p ≈ 0,04). Hay un poco de las dos cosas: el sello de Gemini sobreestima, y los análisis de Claude parecen algo peores.
+- **Contra mis 24 etiquetas** (cada afirmación pasada tal cual): Ultra marca `CONTRADICHA`, con cita verificada, 7 de mis 15 contradicciones reales y da por buenas 6 de mis 9 falsas alarmas. Sus avisos son reales 7 de 10 veces (70 %; los de Gemini, 15 de 24, 62 %). Otras 4 de las 15 las marca `SIN_RESPALDO`, un estado que el sello actual no cuenta. **Lightning**, el modelo pequeño, no detecta ninguna y 6 de sus 24 respuestas no sirvieron: descartado.
+- Un cruce previo por parecido (dejando que Nemotron extrajera sus propias afirmaciones) solo coincidió en 7 de las 24, y por eso no concluye nada.
+
+**Qué decidí.** No tocar el código por ahora. Es una prueba exploratoria que apunta a que Nemotron Ultra sirve de tercer auditor, y el siguiente paso es medirlo en un conjunto más grande, con errores plantados y con más empresas.
+
+**Virtud.** La prueba se ejecutó sin escribir en la base ni en el repositorio, y la misma regla de sello se aplicó a los tres modelos. Una discrepancia que vi (el cruce por parecido) la descarté en vez de forzarla.
+
+**Coste.** Con 10 avisos y 24 casos las cifras de precisión no son firmes. Mis 24 casos salieron de lo que Gemini ya había marcado, así que el recall de Nemotron frente a Gemini no se puede comparar. Las cifras marcadas por el código se calcularon con la versión actual del verificador (con sufijos K/M), no con la de cuando se pusieron los sellos. No he comprobado los límites del plan gratuito de NVIDIA, y los modelos de prueba pueden cambiar o desaparecer.
 
 ---
 
