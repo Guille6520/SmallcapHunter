@@ -4,7 +4,7 @@ Esto es lo que probé, lo que esperaba, lo que pasó de verdad y lo que decidí,
 
 Cada vuelta termina con una línea de **virtud** (lo que me dejó) y otra de **coste** (lo que sigue mal o lo que me costó). Los números salen de mi base de datos, de los CSV del repo y de los scripts; cuando un número no se puede reproducir desde el repo, lo digo. Las fechas son de 2026.
 
-Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [Lo que todavía no sé](#lo-que-todavía-no-sé)
+Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [Lo que todavía no sé](#lo-que-todavía-no-sé)
 
 ---
 
@@ -265,6 +265,29 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 **Virtud.** Por primera vez el sello tiene una cifra de acierto hecha contra juicio humano,.
 
 **Coste.** Un solo etiquetador, casos elegidos entre los ya marcados, 11 cifras sin decidir (si yo no puedo decidirlas con los datos delante, el sello solo sirve si enseña de dónde sale cada cifra) y la mayoría de cifras son de Claude.
+
+---
+
+## 14. Backtest de las ideas de la literatura (16 nov)
+
+**Qué probé.** Contrastar con datos históricos cinco ideas sacadas de la literatura sobre compras de insiders, con las reglas de decisión escritas **antes** de ver ningún resultado: (H1) menos volatilidad previa rinde mejor; (H2) estar cerca de mínimos de 52 semanas, que es lo que premia el score, no rinde mejor que estar cerca de máximos; (H3) los compradores «oportunistas» rinden más que los rutinarios; (H4) la dilución reciente empeora el resultado; (H5) el exceso no sobrevive a costes razonables. Universo: 9.910 clusters de compras (3 o más insiders en 60 días, desde 2018) en 3.703 empresas; el análisis principal usa los 1.077 con capitalización de la época entre 50 y 2.000 M y precio disponible. Medida: exceso frente al IWM a 6, 12 y 24 meses, entrando 3 días hábiles después de la operación, con medianas, bootstrap agrupado por mes de entrada y un control con fechas al azar de las mismas acciones.
+
+**Qué esperaba.** Algo de señal en volatilidad o en oportunistas, y que los mínimos de 52 semanas no ayudaran.
+
+**Qué pasó.**
+- **No hay ventaja del cluster.** Exceso mediano de **-11,2 %** a 12 meses y **-15,8 %** a 24, y solo el 38-40 % de los eventos bate al índice. Con fechas al azar de las mismas acciones sale -10,6 % y -19,0 % (p 0,61 y 0,24): lo mismo.
+- **H1, sugerente, no significativa.** ρ de Spearman de -0,107 (p 0,009) y -0,099 (p 0,015); el tercil más volátil rinde entre 18 y 25 puntos menos en mediana. No llega al umbral que fijé (p < 0,005) al agrupar por mes.
+- **H2, sin evidencia en ningún sentido.** Premiar mínimos no ayuda, pero premiar máximos tampoco (p = 0,41). Con score ≥ 25, la tesis V1 frente a la V2 da +9,4 puntos a 12 meses (p 0,41) y +22,3 a 24 (p 0,55), con 30 a 100 eventos por grupo.
+- **H3, no se apoya.** Solo el 8,5 % de los insiders son «rutinarios» en small caps, y el efecto sale al revés (p 0,009 a 24 meses) y desaparece con un evento por empresa.
+- **H4, no se apoya.** Las diluidas rinden más en mediana (+6,4 % frente a -12,4 % a 12 meses; p 0,11). El criterio de shelf o 8-K 3.02 no se pudo probar: la base solo lo guarda desde jul-2025.
+- **H5.** El exceso mediano ya es negativo sin costes, así que con costes solo empeora. La media a 24 meses (+4,0 %) cae a +1,0 % con un 3 % de coste.
+- **Secundaria.** La aceleración de ingresos es la única asociación positiva clara (ρ +0,108, p < 0,001 a 12 meses), pero puede ser solo «tener ingresos».
+
+**Qué decidí.** No tocar el score de producción: son resultados exploratorios. Registrar volatilidad previa, aceleración de ingresos y dilución como campos de la V2, para evaluarlos hacia adelante sin cambiar nada.
+
+**Virtud.** Las reglas estaban fijadas antes y se aplicaron tal cual: H1 se queda en «sugerente» aunque el p ingenuo lo pasaba. Revisé el código buscando datos del futuro y no encontré ninguno, y recalculé desde el CSV la mediana y la ρ de volatilidad: coinciden con el informe.
+
+**Coste.** Es un techo, no un resultado. Al 33 % de los eventos le falta precio en Yahoo (en 2018-2021 solo se conserva entre el 33 y el 43 %), casi seguro por empresas deslistadas o quebradas, y eso sesga hacia arriba. La entrada cuenta desde la fecha de la operación y no de la presentación del Form 4, porque la base no guarda esa fecha. «Rutinario» sigue una versión cercana a la del artículo original, y la capitalización de la época solo se reconstruyó en el 26 % de los clusters. El análisis se corrió una vez sobre una caché parcial para probar el código y se vieron cifras provisionales antes de fijar el script final; no se cambiaron hipótesis ni umbrales después. Los scripts y los datos no están en este repositorio.
 
 ---
 
