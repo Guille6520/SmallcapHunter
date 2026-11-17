@@ -4,7 +4,7 @@ Esto es lo que probé, lo que esperaba, lo que pasó de verdad y lo que decidí,
 
 Cada vuelta termina con una línea de **virtud** (lo que me dejó) y otra de **coste** (lo que sigue mal o lo que me costó). Los números salen de mi base de datos, de los CSV del repo y de los scripts; cuando un número no se puede reproducir desde el repo, lo digo. Las fechas son de 2026.
 
-Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [15](#15-nemotron-como-tercer-auditor-una-prueba-16-nov) Nemotron · [Lo que todavía no sé](#lo-que-todavía-no-sé)
+Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [15](#15-nemotron-como-tercer-auditor-una-prueba-16-nov) Nemotron · [16](#16-errores-plantados-cuántos-errores-se-le-escapan-al-sello-17-nov) errores plantados · [Lo que todavía no sé](#lo-que-todavía-no-sé)
 
 ---
 
@@ -312,12 +312,43 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 
 ---
 
+## 16. Errores plantados: cuántos errores se le escapan al sello (17 nov)
+
+**Qué probé.** Fabricar errores con la verdad conocida, para medir lo que el etiquetado manual no mide: cuántos errores deja pasar el sello. Primero, **cifras**: en 14 análisis sustituí una cifra de la tesis (que sí estaba en el texto) por otra que no. Después, **direcciones invertidas**: Claude Haiku reescribió 24 frases que el Auditor había dado por respaldadas para que afirmasen lo contrario, con el mínimo cambio y sin tocar cifras ni nombres (revisé a mano 20 de las 24). Tres auditores (Nemotron 3 Ultra, Claude Haiku y Gemini Flash) auditaron las mismas frases alteradas y las mismas originales, con el prompt, las citas y el sello de producción. Medí dos cosas por separado: la **cobertura** (¿el auditor extrae la frase alterada y la comprueba?) y el **recall** (¿la da por `CONTRADICHA`, con una cita que existe en el texto?).
+
+**Qué esperaba.** Que el sello cazara casi todos los errores plantados.
+
+**Qué pasó.**
+- **Cifras: 14 de 14 detectadas.** Lo hace el código, no el modelo: cualquier cifra que no esté en el texto se marca, y las plantadas se eligieron para que no estuvieran. Prueba que el sello atrapa un número cambiado; no mide al modelo.
+- **Direcciones invertidas: el sello deja pasar cerca de la mitad.**
+
+| Auditor | Frases alteradas válidas | Extrae y comprueba la frase | Recall (`CONTRADICHA` con cita verificada) | Originales con avisos |
+|---|---|---|---|---|
+| Nemotron 3 Ultra | 24 | 19 | **14 de 24 (58 %)** | 5 de 24 |
+| Claude Haiku | 24 | 17 | 11 de 24 (46 %) | 6 de 24 |
+| Gemini Flash | 20 | 16 | 9 de 20 (45 %) | 12 de 21 |
+
+- **Hay un hueco de cobertura.** El Auditor solo comprueba las 3 a 6 afirmaciones que él mismo elige. Entre un 20 y un 29 % de las frases alteradas ni siquiera llegaron a comprobarse (5 de 24 con Nemotron, 7 de 24 con Claude, 4 de 20 con Gemini). Entre las que sí se comprobaron, el recall sube a 14 de 19 (Nemotron), 11 de 17 (Claude) y 9 de 16 (Gemini).
+- **Hechos frente a valoraciones.** Separé a mano las plantas que son un hecho comprobable («están vendiendo» en vez de «comprando», «deja el cargo de CEO») de las valoraciones («capital impaciente», «barreras de entrada reducidas»). En los hechos, Nemotron detecta 7 de 10, Claude 6 de 10 y Gemini 3 de 9. En las valoraciones, 7 de 14, 5 de 14 y 6 de 11.
+- **Ninguna frase original se dio por contradicha** (0 de 69 entre los tres auditores): sobre estas frases no hay falsas alarmas.
+- **Gemini sigue siendo el más estricto** con los textos sin tocar (12 de 21 originales con avisos, frente a 5 de 24 y 6 de 24), como ya vi en la vuelta 15.
+
+**La primera versión salió mal, y lo cuento.** Mi primer intento de invertir direcciones cambiaba palabras sueltas por un diccionario y daba frases rotas («La empeora combinada…»). Salió un 1 de 10, y eso medía mi error y no al Auditor. Lo descarté: no guardaba además qué afirmaciones extraía el auditor, así que no distinguía «no lo vio» de «lo vio y lo dio por bueno».
+
+**Qué decidí.** No cambiar todavía el código. Las dos mejoras que se desprenden son: que el Auditor compruebe **todas** las frases factuales de la tesis y no solo las que él elige, y que el sello cuente también `SIN_RESPALDO` (hoy no cuenta).
+
+**Virtud.** Por primera vez hay una cifra de lo que el sello deja pasar y una causa concreta (la cobertura), medida con tres modelos sobre las mismas frases.
+
+**Coste.** Las plantas las escribió Claude, y se eligieron entre frases que Nemotron ya había dado por respaldadas, así que Nemotron tiene ventaja en cobertura. Los errores son de una sola frase y de un tipo (dirección), más fáciles que los reales. La separación entre hecho y valoración es mía y subjetiva. Son 20 a 24 casos por auditor: las diferencias entre modelos no son demostrables. A Gemini le fallaron 4 plantas por errores 503 del servidor. Y a mitad de la prueba se agotó el saldo de la API de Anthropic y hubo que recargarlo.
+
+---
+
 ## Lo que todavía no sé
 
 Cada pregunta tiene una forma de medirla.
 
 1. **¿Cuántos errores se le escapan al sello?** La vuelta 13 midió cuántas de sus alarmas son reales (62 % de las afirmaciones, 73 % de las cifras decididas), pero no lo que deja pasar. Habría que etiquetar a mano análisis completos, `VERIFICADO` incluidos, y contar los errores que no avisó.
-2. **¿Reduce errores el Auditor v2 en la práctica?** Habría que plantar errores en análisis nuevos o contrastar los avisos con una revisión humana. Hoy solo sé que detecta una cifra cambiada en un caso fácil.
+2. **¿Reduce errores el Auditor v2 en la práctica?** La vuelta 16 midió que deja pasar cerca de la mitad de los errores de dirección plantados y que la cobertura es el principal hueco. Falta medirlo con errores naturales y con plantas elegidas sin depender de ningún auditor.
 3. **¿Qué parte de la inestabilidad del veredicto es ruido del modelo?** Re-analizar la misma empresa N veces con los mismos datos y el mismo protocolo, y contar cuánto cambia. Hoy tengo 8 pares del mismo protocolo, con datos posiblemente distintos.
 4. **¿Debe el sello avisar por afirmaciones sin respaldo?** Mirando, sobre los análisis ya verificados, cuántas afirmaciones sin respaldo hay y cuántas eran errores reales.
 5. **¿Aporta algo un modelo mayor como Detective?** Sonnet en unas decenas de empresas, contra Haiku, con la misma vara de citas con soporte y desacuerdo.

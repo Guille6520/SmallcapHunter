@@ -37,7 +37,7 @@ Este proyecto no es un selector de acciones. Es un sistema de LLM donde cada afi
 - **Votos ciegos.** Dos modelos de familias distintas analizan la misma empresa por separado. El veredicto son sus dos votos, y el desacuerdo se ve.
 - **Citas verificadas por código.** Una cita traducida, parafraseada o inventada no cuenta como respaldo. Lo decide un programa, sin otro modelo de por medio.
 - **Un Auditor que verifica.** Una parte es código (busca cada cifra de la tesis en el texto) y otra es el modelo, acotado: solo puede absolver una cifra si enseña un cálculo cuyos operandos están en el documento.
-- **Los fallos, documentados.** Cada cambio de diseño viene de una medición, incluidas las que salieron mal: [quince vueltas, con sus números](docs/hallazgos.md).
+- **Los fallos, documentados.** Cada cambio de diseño viene de una medición, incluidas las que salieron mal: [dieciséis vueltas, con sus números](docs/hallazgos.md).
 
 ![Candidatas con el voto de cada Detective y su sello](docs/capturas/candidatas.png)
 
@@ -64,7 +64,7 @@ Levanta Postgres con pgvector, la API (<http://localhost:8000/docs>) y el dashbo
 
 | Documento | Qué cuenta |
 |---|---|
-| [hallazgos.md](docs/hallazgos.md) | Las quince vueltas del proyecto: qué probé, qué esperaba, qué pasó y qué decidí |
+| [hallazgos.md](docs/hallazgos.md) | Las dieciséis vueltas del proyecto: qué probé, qué esperaba, qué pasó y qué decidí |
 | [limitaciones.md](docs/limitaciones.md) | Todo lo que no sé o no funciona, con sus cifras |
 | [evaluacion-citas.md](docs/evaluacion-citas.md) | Cómo se midió si los modelos se inventan las citas |
 | [arranque.md](docs/arranque.md) | Instalación, ingesta, pipeline, orquestador, dashboard y estructura del código |
