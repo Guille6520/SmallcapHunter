@@ -115,6 +115,7 @@ ITEMS_8K_DESCRIPCION = {
 PRECIOS_USD_POR_TOKEN = {
     "claude": {"entrada": 1.0 / 1_000_000, "salida": 5.0 / 1_000_000},
     "gemini": {"entrada": 0.0, "salida": 0.0},
+    "nemotron": {"entrada": 0.0, "salida": 0.0},  # plan de prueba gratuito de NVIDIA; si cambia, actualizar
 }
 
 
@@ -604,12 +605,72 @@ def llamar_claude(prompt: str) -> str:
     )
 
 
+NVIDIA_URL = "https://integrate.api.nvidia.com/v1/chat/completions"
+NVIDIA_MODELO_POR_DEFECTO = "nvidia/nemotron-3-ultra-550b-a55b"
+
+
+def llamar_nemotron(prompt: str) -> str:
+    """
+    Llamo a Nemotron por la API de NVIDIA (compatible con OpenAI). Es un proveedor
+    OPCIONAL y apagado por defecto: ni el Detective ni el Auditor lo usan salvo que se
+    pida el modelo "nemotron" a mano. Existe porque en las pruebas de nov-2026
+    (docs/hallazgos.md, vuelta 15) funcionó como tercer auditor: 50 de 50 respuestas
+    con JSON válido y 92 % de citas con soporte. Un Nemotron anterior, vía OpenRouter,
+    se retiró en sep-2026 por JSON roto y errores 429/503: esa tasa de fallo se sigue
+    midiendo en llm_calls como la de cualquier otro modelo.
+
+    NVIDIA_API_KEY y, si se quiere otro modelo, NVIDIA_MODEL salen del entorno. El plan
+    de prueba gratuito no publica sus límites de uso. Sin modo JSON forzado (como
+    Claude): se pide JSON en el prompt y se quita la valla ```json si la hay. Sin
+    razonamiento (enable_thinking=false) y temperatura 0, como en las pruebas.
+    Sin dependencias nuevas: solo la librería estándar.
+    """
+    import urllib.error
+    import urllib.request
+
+    clave = os.environ["NVIDIA_API_KEY"].strip()
+    modelo = os.environ.get("NVIDIA_MODEL", "").strip() or NVIDIA_MODELO_POR_DEFECTO
+    cuerpo = {
+        "model": modelo,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": 8000,
+        "temperature": 0,
+        "chat_template_kwargs": {"enable_thinking": False},
+    }
+    peticion = urllib.request.Request(
+        NVIDIA_URL, data=json.dumps(cuerpo).encode("utf-8"),
+        headers={"Authorization": f"Bearer {clave}", "Content-Type": "application/json"},
+    )
+    try:
+        with urllib.request.urlopen(peticion, timeout=300) as r:
+            datos = json.load(r)
+    except urllib.error.HTTPError as e:
+        # El texto lleva el código HTTP para que clasificar_error lo reconozca (429, 503...).
+        # Nunca la clave: solo el cuerpo del error que devuelve el servidor.
+        raise RuntimeError(f"nemotron HTTP {e.code}: {e.read().decode('utf-8', 'replace')[:150]}") from None
+    eleccion = datos["choices"][0]
+    texto = (eleccion["message"].get("content") or "").strip()
+    if texto.startswith("```"):
+        texto = texto.split("\n", 1)[1] if "\n" in texto else texto
+        if texto.rstrip().endswith("```"):
+            texto = texto.rstrip()[:-3]
+    uso = datos.get("usage") or {}
+    return RespuestaLLM(
+        texto.strip(),
+        tokens_entrada=uso.get("prompt_tokens"),
+        tokens_salida=uso.get("completion_tokens"),
+        motivo_fin=eleccion.get("finish_reason"),
+    )
+
+
 def llamar_modelo(modelo: str, prompt: str) -> str:
     """Despacho único: todos los scripts llaman a los LLM por aquí."""
     if modelo == "gemini":
         return llamar_gemini(prompt)
     if modelo == "claude":
         return llamar_claude(prompt)
+    if modelo == "nemotron":
+        return llamar_nemotron(prompt)
     raise ValueError(f"Modelo desconocido: {modelo}")
 
 
