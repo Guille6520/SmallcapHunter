@@ -4,7 +4,7 @@ Esto es lo que probé, lo que esperaba, lo que pasó de verdad y lo que decidí,
 
 Cada vuelta termina con una línea de **virtud** (lo que me dejó) y otra de **coste** (lo que sigue mal o lo que me costó). Los números salen de mi base de datos, de los CSV del repo y de los scripts; cuando un número no se puede reproducir desde el repo, lo digo. Las fechas son de 2026.
 
-Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [15](#15-nemotron-como-tercer-auditor-una-prueba-16-nov) Nemotron · [16](#16-errores-plantados-cuántos-errores-se-le-escapan-al-sello-17-nov) errores plantados · [Lo que todavía no sé](#lo-que-todavía-no-sé)
+Índice rápido: [1](#1-la-hipótesis-frente-a-los-datos-históricos) hipótesis frente a datos · [2](#2-el-hueco-del-segundo-modelo-sep) el segundo modelo · [3](#3-las-citas-protocolo-1-frente-a-protocolo-2-oct) citas · [4](#4-el-auditor-v1-daba-un-veredicto-y-era-ruido-oct) Auditor v1 · [5](#5-el-dashboard-enseñaba-el-veredicto-equivocado) bug de los 39 de 55 · [6](#6-dos-tesis-sobre-el-mismo-score-oct-nov) tesis V1 y V2 · [7](#7-un-auditor-de-dos-partes-prueba-sintética-oct) prototipo de dos partes · [8](#8-el-auditor-v2-en-producción-7-nov) Auditor v2 · [9](#9-el-veredicto-cambia-al-re-analizar) inestabilidad · [10](#10-robustez-copias-y-alertas-sep-nov) robustez · [11](#11-fallos-de-datos-y-de-concurrencia) fallos de datos · [12](#12-un-fallo-en-el-score-de-aceleración-encontrado-al-documentar-el-código-7-nov) score de aceleración · [13](#13-etiquetar-a-mano-lo-que-marca-el-auditor-13-nov) etiquetas a mano · [14](#14-backtest-de-las-ideas-de-la-literatura-16-nov) backtest · [15](#15-nemotron-como-tercer-auditor-una-prueba-16-nov) Nemotron · [16](#16-errores-plantados-cuántos-errores-se-le-escapan-al-sello-17-nov) errores plantados · [17](#17-cobertura-pedirle-al-auditor-todas-las-frases-17-nov) cobertura · [Lo que todavía no sé](#lo-que-todavía-no-sé)
 
 ---
 
@@ -340,6 +340,33 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 **Virtud.** Por primera vez hay una cifra de lo que el sello deja pasar y una causa concreta (la cobertura), medida con tres modelos sobre las mismas frases.
 
 **Coste.** Las plantas las escribió Claude, y se eligieron entre frases que Nemotron ya había dado por respaldadas, así que Nemotron tiene ventaja en cobertura. Los errores son de una sola frase y de un tipo (dirección), más fáciles que los reales. La separación entre hecho y valoración es mía y subjetiva. Son 20 a 24 casos por auditor: las diferencias entre modelos no son demostrables. A Gemini le fallaron 4 plantas por errores 503 del servidor. Y a mitad de la prueba se agotó el saldo de la API de Anthropic y hubo que recargarlo.
+
+---
+
+## 17. Cobertura: pedirle al Auditor todas las frases (17 nov)
+
+**Qué probé.** La vuelta 16 señaló como hueco principal que el Auditor solo comprueba las 3 a 6 afirmaciones que él elige. Repetí la prueba de las 24 frases alteradas con Nemotron 3 Ultra cambiando una sola cosa del prompt: en vez de «las 3 a 6 afirmaciones más importantes», «todas las afirmaciones factuales comprobables, una por cada frase que afirme un hecho (hasta 15)». Mismo verificador de citas, mismas reglas de sello, mismas frases.
+
+**Qué esperaba.** Que la cobertura subiera mucho y el recall bastante menos, porque comprobar una frase no es lo mismo que acertar.
+
+**Qué pasó.**
+
+| Prompt | Frases alteradas comprobadas | Recall (`CONTRADICHA` con cita verificada) | Recall contando también `SIN_RESPALDO` | Originales con avisos |
+|---|---|---|---|---|
+| Actual (3-6 afirmaciones) | 19 de 24 | 14 de 24 (58 %) | 14 de 24 | 5 de 24 |
+| Todas las frases (hasta 15) | **23 de 23** | 15 de 23 (65 %) | 17 de 23 (74 %) | 6 de 23 |
+
+- La cobertura pasa del 79 % al 100 % y el número de afirmaciones extraídas de 6 a 15 de mediana.
+- El recall sube poco (+1 con la regla estricta, +3 con la amplia): con 23-24 casos no es una mejora demostrable. Comprobar una frase no basta; el modelo sigue dando por buenas algunas frases invertidas.
+- Ninguna frase original se dio por contradicha en ninguna de las dos configuraciones.
+- El coste de salida casi no cambia (en torno a 1.100-1.600 tokens por auditoría). A cambio, **2 de 48 respuestas no fueron JSON válido** (con el prompt actual, ninguna de 48).
+- **`SIN_RESPALDO` en el sello:** con el prompt actual, contarlo añade 0 detecciones con Nemotron, 1 con Claude y 2 con Gemini sobre 24 casos, y volvería `CON_AVISOS` a la mayoría de los análisis (20 de 29 `VERIFICADO` tienen alguna afirmación sin respaldo). No lo cuento.
+
+**Qué decidí.** No cambiar todavía el prompt de producción. El dashboard, la API y el orquestador filtran por la versión del Auditor: subir a la versión 3 ocultaría los 50 sellos actuales hasta volver a auditarlos. Es una decisión que quiero tomar a propósito y no como efecto lateral. Mientras tanto, queda añadido **Nemotron como proveedor opcional** (apagado por defecto, con 11 tests): ni el Detective ni el Auditor lo usan salvo que se pida a mano.
+
+**Virtud.** Se separó con una sola variable lo que mide cada cambio: la cobertura se arregla con el prompt, pero el recall depende de que el modelo razone bien, y ahí sigue en torno al 60-70 %.
+
+**Coste.** Una sola configuración, un solo modelo y 23-24 frases: el recall casi no se mueve. Dos respuestas con JSON inválido son pocas para hablar de tasa. Con el prompt nuevo habría que repetir la medición en Claude y Gemini antes de tocar producción.
 
 ---
 
