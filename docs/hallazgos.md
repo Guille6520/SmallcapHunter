@@ -335,6 +335,8 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 
 **La primera versión salió mal, y lo cuento.** Mi primer intento de invertir direcciones cambiaba palabras sueltas por un diccionario y daba frases rotas («La empeora combinada…»). Salió un 1 de 10, y eso medía mi error y no al Auditor. Lo descarté: no guardaba además qué afirmaciones extraía el auditor, así que no distinguía «no lo vio» de «lo vio y lo dio por bueno».
 
+**Corrección (18 nov).** Medí «frase comprobada» con un parecido de palabras que penaliza las afirmaciones cortas. Con una medida más justa (cuántas palabras de la afirmación extraída están en la frase alterada), la cobertura del prompt actual es de 21 de 24 con Nemotron, 19 de 24 con Claude y 18 de 20 con Gemini. El hueco existe, pero es del 10 al 21 %, no del 20 al 29 %. El recall estricto de la tabla se calculó con la medida antigua, y no he podido recalcularlo con la nueva.
+
 **Qué decidí.** No cambiar todavía el código. Las dos mejoras que se desprenden son: que el Auditor compruebe **todas** las frases factuales de la tesis y no solo las que él elige, y que el sello cuente también `SIN_RESPALDO` (hoy no cuenta).
 
 **Virtud.** Por primera vez hay una cifra de lo que el sello deja pasar y una causa concreta (la cobertura), medida con tres modelos sobre las mismas frases.
@@ -362,7 +364,25 @@ Mi primera reacción tuvo un tropiezo, y lo cuento. Recordaba haber decidido tol
 - El coste de salida casi no cambia (en torno a 1.100-1.600 tokens por auditoría). A cambio, **2 de 48 respuestas no fueron JSON válido** (con el prompt actual, ninguna de 48).
 - **`SIN_RESPALDO` en el sello:** con el prompt actual, contarlo añade 0 detecciones con Nemotron, 1 con Claude y 2 con Gemini sobre 24 casos, y volvería `CON_AVISOS` a la mayoría de los análisis (20 de 29 `VERIFICADO` tienen alguna afirmación sin respaldo). No lo cuento.
 
-**Qué decidí.** No cambiar todavía el prompt de producción. El dashboard, la API y el orquestador filtran por la versión del Auditor: subir a la versión 3 ocultaría los 50 sellos actuales hasta volver a auditarlos. Es una decisión que quiero tomar a propósito y no como efecto lateral. Mientras tanto, queda añadido **Nemotron como proveedor opcional** (apagado por defecto, con 11 tests): ni el Detective ni el Auditor lo usan salvo que se pida a mano.
+**Qué decidí (primera lectura, con solo Nemotron).** No cambiar todavía el prompt de producción. El dashboard, la API y el orquestador filtran por la versión del Auditor: subir a la versión 3 ocultaría los 50 sellos actuales hasta volver a auditarlos. Es una decisión que quiero tomar a propósito y no como efecto lateral. Mientras tanto, queda añadido **Nemotron como proveedor opcional** (apagado por defecto, con 11 tests): ni el Detective ni el Auditor lo usan salvo que se pida a mano.
+
+**Qué pasó con Claude y con Gemini (18 nov).** Repetí la prueba con los otros dos modelos. Antes de leer nada hubo que limpiar los datos: un lanzamiento duplicado mío dejó registros repetidos (95 filas para 48 pruebas en Claude), y había un proceso de Gemini golpeando una cuota agotada, que paré. Después de deduplicar:
+
+| Auditor | Prompt | Frases alteradas comprobadas | Recall contando `SIN_RESPALDO` | Originales con avisos |
+|---|---|---|---|---|
+| Nemotron | actual | 21 de 24 | 15 | 5 de 24 |
+| Nemotron | todas las frases | 23 de 23 | 18 | 6 de 23 |
+| Claude | actual | 19 de 24 | 16 | 6 de 24 |
+| Claude | todas las frases | **19 de 24** | **12** | 5 de 24 |
+| Gemini | actual | 18 de 20 | 14 | 12 de 21 |
+| Gemini | todas las frases | 6 de 6 | 5 | 4 de 6 |
+
+(La cobertura de esta tabla usa la medida más justa explicada en la corrección de la vuelta 16, y por eso difiere de las cifras de arriba, que usaban la antigua.)
+
+- **No generaliza.** Con Nemotron, «todas las frases» mejora la cobertura. Con Claude no la mejora y el recall baja de 16 a 12. Con Gemini no hay datos: su plan gratuito se agotó y solo se completaron 6 de 24 pruebas.
+- Una medida mía resultó engañosa y la he corregido: con 15 afirmaciones más pequeñas, el parecido por palabras bajaba aunque la frase sí se hubiera comprobado, y Claude parecía empeorar la cobertura (13 de 24) cuando en realidad no cambia.
+
+**Qué decidí (revisado).** No cambiar el prompt del Auditor ni subir la versión. La mejora no es general y con dos de tres modelos no medidos o en contra no hay base. La cobertura sigue siendo un hueco menor; el cuello de botella es que el modelo, aun comprobando la frase, la da por buena. Rectifico lo que dije al terminar el experimento con Nemotron: entonces recomendaba subir a la versión 3, y con estos datos ya no.
 
 **Virtud.** Se separó con una sola variable lo que mide cada cambio: la cobertura se arregla con el prompt, pero el recall depende de que el modelo razone bien, y ahí sigue en torno al 60-70 %.
 
