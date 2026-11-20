@@ -60,7 +60,7 @@ log = logging.getLogger(__name__)
 
 DB_CONFIG = {
     "host":     os.getenv("DB_HOST", "127.0.0.1"),
-    "port":     os.getenv("DB_PORT", "5432"),
+    "port":     os.getenv("DB_PORT", "5434"),
     "dbname":   os.getenv("DB_NAME", "smallcap_hunter"),
     "user":     os.getenv("DB_USER", "postgres"),
     "password": os.getenv("DB_PASSWORD", ""),

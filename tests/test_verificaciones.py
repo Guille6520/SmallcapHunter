@@ -91,6 +91,24 @@ def test_el_modelo_solo_absuelve_una_cifra_si_su_calculo_se_apoya_en_el_texto():
     assert not derivacion_verificable("48.2 - 1 = 12.1%", "12.1%", fv), "con un solo operando real no basta"
 
 
+def test_el_prompt_del_auditor_no_llama_completo_a_un_texto_recortado():
+    """El Auditor ve solo los primeros MAX_CARACTERES_MDA caracteres del MD&A; decirle
+    «COMPLETO» era falso y le invitaba a dar por no dicho lo que estaba más abajo."""
+    from auditor import construir_prompt_auditor
+    from detective import MAX_CARACTERES_MDA
+
+    contexto = {
+        "nombre": "Empresa Ficticia", "ticker": "FAKE", "sector": "x", "bolsa": "NASDAQ",
+        "market_cap": 1_000_000, "scores": (1, 2, 3, 4, 10), "transacciones": [],
+        "texto_mda": "Revenue grew. " * 5000, "eventos_8k": [], "activistas": [], "senales_mercado": None,
+    }
+    prompt = construir_prompt_auditor(contexto, {"tesis_inversion": "x"}, [])
+
+    assert "COMPLETO" not in prompt
+    assert f"EXTRACTO DEL MD&A DEL 10-Q, solo los primeros {MAX_CARACTERES_MDA:,} caracteres" in prompt
+    assert "Revenue grew. " * 5000 not in prompt, "el texto del prompt va recortado"
+
+
 def test_el_bloque_estructurado_tolera_datos_que_faltan():
     texto = bloque_estructurado({"sector": "Tech", "bolsa": "NASDAQ", "market_cap": None,
                                  "scores": None, "transacciones": [("Ana", None, "2026-01-02", None),

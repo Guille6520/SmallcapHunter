@@ -158,7 +158,7 @@ EMPRESA: {contexto['nombre']} ({contexto['ticker']})
 TESIS DEL DETECTIVE A REVISAR:
 {tesis_a_revisar(respuesta_detective)}
 
-TEXTO MD&A COMPLETO DEL 10-Q (comprueba contra él, no asumas que el Detective lo interpretó bien):
+EXTRACTO DEL MD&A DEL 10-Q, solo los primeros {MAX_CARACTERES_MDA:,} caracteres (comprueba contra él, no asumas que el Detective lo interpretó bien):
 \"\"\"
 {texto_mda}
 \"\"\"{formatear_eventos_8k(contexto)}{formatear_senales_mercado(contexto)}

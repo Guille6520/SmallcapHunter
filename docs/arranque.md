@@ -172,5 +172,5 @@ Hay una vista opcional, de uso personal y **apagada por defecto**, que no se mue
 ├── validadas_historicas.csv  resultados_*.csv
 │
 ├── docs/                          # architecture.svg, demo.gif, capturas/, hallazgos.md, evaluacion-citas.md
-└── tests/                         # 345 tests offline (ver abajo)
+└── tests/                         # 346 tests offline (ver abajo)
 ```

@@ -54,7 +54,7 @@ DB_CONFIG = {
     # 127.0.0.1 y no "localhost": con Docker Desktop en Windows, localhost
     # puede resolver mal y la conexión falla de forma intermitente.
     "host":     os.getenv("DB_HOST", "127.0.0.1"),
-    "port":     os.getenv("DB_PORT", "5432"),
+    "port":     os.getenv("DB_PORT", "5434"),
     "dbname":   os.getenv("DB_NAME", "smallcap_hunter"),
     "user":     os.getenv("DB_USER", "postgres"),
     "password": os.getenv("DB_PASSWORD", ""),

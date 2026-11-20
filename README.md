@@ -18,7 +18,7 @@
 4. **Un verificador que es código, no un modelo**, comprueba que cada cita está en el documento.
 5. **Un Auditor cruzado** (cada modelo revisa al otro) contrasta cifras y afirmaciones y pone un sello: `VERIFICADO` o `CON_AVISOS`.
 
-Hasta hoy: 187 análisis en 64 empresas, 348 llamadas a modelos y unos 3,7 $ de gasto total. Python, PostgreSQL con pgvector, LangGraph, FastAPI, Streamlit, Docker Compose y 345 tests que corren sin red ni claves.
+Hasta hoy: 187 análisis en 64 empresas, 348 llamadas a modelos y unos 3,7 $ de gasto total. Python, PostgreSQL con pgvector, LangGraph, FastAPI, Streamlit, Docker Compose y 346 tests que corren sin red ni claves.
 
 ## Lo que está medido, y lo que no
 

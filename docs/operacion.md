@@ -13,7 +13,7 @@ pip install -r requirements.txt
 pytest
 ```
 
-345 tests, **todos offline**: sin base de datos, sin claves, sin red. Cubren la lógica pura (normalización, filtros, score), el verificador de citas, el comprobador de cifras y los sellos, las reglas de votos e interruptores, los cambios entre pasadas, la copia de seguridad, las alertas, la cuota de Gemini, la política de retirada de modelos del orquestador, el grafo de LangGraph, el RAG y su degradación, y los endpoints de la API. GitHub Actions los ejecuta en cada push (`.github/workflows/tests.yml`, Python 3.12).
+346 tests, **todos offline**: sin base de datos, sin claves, sin red. Cubren la lógica pura (normalización, filtros, score), el verificador de citas, el comprobador de cifras y los sellos, las reglas de votos e interruptores, los cambios entre pasadas, la copia de seguridad, las alertas, la cuota de Gemini, la política de retirada de modelos del orquestador, el grafo de LangGraph, el RAG y su degradación, y los endpoints de la API. GitHub Actions los ejecuta en cada push (`.github/workflows/tests.yml`, Python 3.12).
 
 Qué cubren de verdad (cobertura de líneas medida con `pytest-cov`, 56 % del total): el núcleo está muy cubierto (verificador de citas 98 %, sellos y votos 100 %, API 94 %, orquestador 87 %, Auditor 80 %); las ingestas, poco (entre el 21 y el 31 %); el dashboard, casi nada (12 %: lo probé a mano y con una prueba de humo); y los scripts de validación histórica, nada, porque no son parte del pipeline. Más tests no es mejor por sí mismo: revisé la suite y no encontré redundancia (solo un par de tests con cuerpos casi iguales, y prueban escenarios distintos). Lo que falta es probar las ingestas contra respuestas de la SEC guardadas.
 
